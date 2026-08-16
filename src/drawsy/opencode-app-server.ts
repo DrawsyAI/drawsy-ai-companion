@@ -28,6 +28,7 @@ import {
   type JsonObject
 } from "./protocol.js";
 import { extractUserPrompt } from "./conversation-history.js";
+import { executableEnvironment } from "./executable-resolver.js";
 
 type OpenCodeSessionConfig = {
   id: string;
@@ -253,8 +254,9 @@ ${network}`;
 };
 
 const runtimeEnvironment = (runtimePath: string, previewPort: number | null) => {
+  const executablePath = executableEnvironment().PATH;
   const environment: NodeJS.ProcessEnv = {
-    PATH: process.env.PATH,
+    PATH: executablePath,
     LANG: process.env.LANG,
     LC_ALL: process.env.LC_ALL,
     TZ: process.env.TZ,
@@ -455,6 +457,11 @@ export class OpenCodeAppServer {
 
     const port = await acquireLoopbackPort();
     const openCodeBinary = resolveOpenCodeBinary();
+    if (!openCodeBinary) {
+      throw new Error(
+        "OpenCode was not found. Install or launch OpenCode on this device, then refresh the Companion engine status."
+      );
+    }
     const environment = runtimeEnvironment(
       this.runtimePath,
       this.session.previewPort
