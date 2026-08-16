@@ -18,7 +18,7 @@ Installers are published on the [GitHub Releases page](https://github.com/Drawsy
 | Windows | `.exe` installer, `.zip` |
 | Linux | `.AppImage`, `.deb` |
 
-Install and launch the companion once. It runs as a tray/background application, starts with the operating system, and listens only on loopback. Drawsy connects to it through the local bridge; a terminal process is not required for normal use.
+Install and launch the companion when you want to use local mode. It stays visible as a tray/menu-bar application while it is running and listens only on loopback. It does not start automatically when you sign in. Quit the companion from its tray/menu-bar menu to stop local access; a terminal process is not required for normal use.
 
 The companion does not install, bundle, or authenticate Codex or OpenCode. The user must already have one of those engines available on the device. The tray status reports which engine is detected. Codex is supported on the packaged desktop targets; the current OpenCode runtime supports macOS and Linux.
 
@@ -76,7 +76,7 @@ The detailed boundary is documented in [`FEATURE-BOUNDARY.md`](FEATURE-BOUNDARY.
 
 ## Repository layout
 
-- `src/app/main.ts` — Electron lifecycle, tray menu, login startup, and bridge ownership.
+- `src/app/main.ts` — Electron lifecycle, visible tray/menu-bar status, manual startup, and bridge ownership.
 - `src/drawsy/bridge.ts` — loopback HTTP bridge, sessions, folder scope, context, previews, and local state.
 - `src/drawsy/mcp.ts` — stdio Drawsy MCP entry point and tool surface.
 - `src/drawsy/codex-app-server.ts` — Codex process and app-server protocol integration.

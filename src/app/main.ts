@@ -35,6 +35,10 @@ if (!gotSingleInstanceLock) {
           label: "Drawsy Companion",
           enabled: false
         },
+        {
+          label: "Local bridge: http://127.0.0.1:3031",
+          enabled: false
+        },
         { type: "separator" },
         ...engines.map((engine) => ({
           label: engineLabel(engine.name, engine.installed, engine.version),
@@ -66,14 +70,22 @@ if (!gotSingleInstanceLock) {
 
   const start = async () => {
     app.setAppUserModelId("ai.drawsy.companion");
+
+    // Companion is deliberately user-launched. This also clears the login item
+    // created by older builds that enabled automatic startup.
+    if (process.platform === "darwin" || process.platform === "win32") {
+      app.setLoginItemSettings({ openAtLogin: false });
+    }
+
     await bridge.listen();
     tray = new Tray(trayImage);
     tray.setToolTip("Drawsy Companion");
     refreshMenu();
-
-    if (process.platform === "darwin") app.dock?.hide();
-    app.setLoginItemSettings({ openAtLogin: true });
   };
+
+  app.on("activate", () => {
+    tray?.popUpContextMenu();
+  });
 
   app.on("before-quit", (event) => {
     if (closing) return;
