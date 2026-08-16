@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.drawsy.json",
+  "compilerOptions": {
+    "outDir": "dist-test"
+  },
+  "include": ["src/drawsy/**/*.ts"],
+  "exclude": []
+}

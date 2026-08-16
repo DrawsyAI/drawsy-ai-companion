@@ -1,0 +1,12 @@
+node_modules/
+dist/
+dist-test/
+release/
+.DS_Store
+*.mcpb
+.vscode
+opencode.json
+
+.env
+.env.*
+!.env.example

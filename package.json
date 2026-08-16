@@ -1,0 +1,70 @@
+{
+  "name": "@drawsy/companion",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.11.0",
+  "description": "Drawsy's local desktop companion, bridge, and surface-scoped MCP",
+  "author": "Drawsy",
+  "license": "MIT",
+  "main": "dist/app/main.js",
+  "bin": {
+    "drawsy-companion": "dist/drawsy/bridge-main.js",
+    "drawsy-ai-mcp": "dist/drawsy/mcp.js"
+  },
+  "scripts": {
+    "clean": "node scripts/clean.mjs",
+    "build": "tsc -p tsconfig.drawsy.json",
+    "build:app": "pnpm build",
+    "dev": "pnpm build && electron .",
+    "start": "electron .",
+    "start:bridge": "node dist/drawsy/bridge-main.js",
+    "start:mcp": "node dist/drawsy/mcp.js",
+    "test": "tsc -p tsconfig.test.json && node --test dist-test/drawsy/*.test.js",
+    "check": "pnpm build && pnpm test",
+    "package": "pnpm clean && pnpm build && electron-builder --publish never",
+    "package:dir": "pnpm clean && pnpm build && electron-builder --dir",
+    "release": "pnpm clean && pnpm build && electron-builder --publish always",
+    "prepack": "pnpm build"
+  },
+  "engines": {
+    "node": ">=20.12"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.25.2",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "electron": "^39.0.0",
+    "electron-builder": "^26.0.12",
+    "typescript": "^5.9.3"
+  },
+  "build": {
+    "appId": "ai.drawsy.companion",
+    "productName": "Drawsy Companion",
+    "directories": {
+      "output": "release"
+    },
+    "asar": true,
+    "asarUnpack": [
+      "dist/drawsy/**/*.js"
+    ],
+    "files": [
+      "dist/app/**/*",
+      "dist/drawsy/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": ["dmg", "zip"]
+    },
+    "win": {
+      "target": ["nsis", "zip"]
+    },
+    "linux": {
+      "category": "Utility",
+      "target": ["AppImage", "deb"]
+    }
+  }
+}
