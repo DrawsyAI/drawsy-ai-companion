@@ -876,20 +876,30 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     assert.match(turn.params.input[2].text, /Canvas context 1/);
     assert.match(turn.params.input[2].text, /2 selected elements/);
     assert.equal(turn.params.input[3].type, "localImage");
-    assert.match(
-      turn.params.input[3].path,
-      new RegExp(
-        `\\.drawsy/context/${session.id}/${contextId}/preview-selection-`
-      )
-    );
+    const previewPath = path
+      .relative(canonicalFolder, turn.params.input[3].path)
+      .split(path.sep);
+    assert.deepEqual(previewPath.slice(0, 4), [
+      ".drawsy",
+      "context",
+      session.id,
+      contextId
+    ]);
+    assert.equal(previewPath.length, 5);
+    assert.match(previewPath[4] ?? "", /^preview-selection-/);
     assert.equal(turn.params.input[3].detail, "original");
     assert.equal(turn.params.input[4].type, "localImage");
-    assert.match(
-      turn.params.input[4].path,
-      new RegExp(
-        `\\.drawsy/context/${session.id}/${contextId}/source-source-1-`
-      )
-    );
+    const sourcePath = path
+      .relative(canonicalFolder, turn.params.input[4].path)
+      .split(path.sep);
+    assert.deepEqual(sourcePath.slice(0, 4), [
+      ".drawsy",
+      "context",
+      session.id,
+      contextId
+    ]);
+    assert.equal(sourcePath.length, 5);
+    assert.match(sourcePath[4] ?? "", /^source-source-1-/);
     assert.match(turn.params.input[5].text, /@gmail/);
     assert.match(turn.params.input[5].text, /person@example\.com/);
     assert.match(turn.params.input[5].text, /not require a tool call/);
