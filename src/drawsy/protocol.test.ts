@@ -310,7 +310,11 @@ test("bridge keeps Codex controls inside the selected-folder boundary", async ()
   const root = await mkdtemp(path.join(tmpdir(), "drawsy-bridge-test-"));
   const selectedFolder = path.join(root, "workspace");
   const requestLog = path.join(root, "requests.ndjson");
-  const fakeCodex = path.join(root, "fake-codex.mjs");
+  const fakeCodexScript = path.join(root, "fake-codex.mjs");
+  const fakeCodex =
+    process.platform === "win32"
+      ? path.join(root, "fake-codex.cmd")
+      : fakeCodexScript;
   const generatedImage = path.join(root, "generated-raccoon.png");
   await import("node:fs/promises").then(({ mkdir }) => mkdir(selectedFolder));
   await writeFile(
@@ -326,7 +330,7 @@ test("bridge keeps Codex controls inside the selected-folder boundary", async ()
   );
   const canonicalFolder = await realpath(selectedFolder);
   await writeFile(
-    fakeCodex,
+    fakeCodexScript,
     `#!/usr/bin/env node
 import readline from "node:readline";
 import { appendFile } from "node:fs/promises";
@@ -405,7 +409,14 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
 });
 `
   );
-  await chmod(fakeCodex, 0o755);
+  if (process.platform === "win32") {
+    await writeFile(
+      fakeCodex,
+      `@echo off\r\n"${process.execPath}" "${fakeCodexScript}" %*\r\n`
+    );
+  } else {
+    await chmod(fakeCodexScript, 0o755);
+  }
 
   const port = await freePort();
   const origin = "http://localhost:3001";
@@ -778,10 +789,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       thread.params.developerInstructions,
       /contextual guidance, not an absolute rule/
     );
-    assert.equal(
-      thread.params.config.mcp_servers.inherited?.enabled ?? false,
-      false
-    );
+    assert.equal(thread.params.config.mcp_servers.inherited.enabled, false);
     assert.equal(thread.params.config.mcp_servers.drawsy.enabled, true);
     assert.equal(
       thread.params.config.plugins["browser@openai-bundled"].enabled,

@@ -555,6 +555,7 @@ export class CodexAppServer {
       ],
       {
         stdio: ["pipe", "pipe", "pipe"],
+        shell: process.platform === "win32",
         detached: session.isolateProcessGroup && process.platform !== "win32",
         env: codexEnvironment(session.previewPort)
       }
