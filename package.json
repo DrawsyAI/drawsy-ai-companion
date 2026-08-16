@@ -43,6 +43,7 @@
   "build": {
     "appId": "ai.drawsy.companion",
     "productName": "Drawsy Companion",
+    "icon": "build/icon.png",
     "directories": {
       "output": "release"
     },
@@ -53,6 +54,7 @@
     "files": [
       "dist/app/**/*",
       "dist/drawsy/**/*",
+      "build/icon.png",
       "package.json"
     ],
     "mac": {

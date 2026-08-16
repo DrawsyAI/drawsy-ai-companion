@@ -5,6 +5,7 @@ import {
   nativeImage,
   Tray
 } from "electron";
+import path from "node:path";
 
 import { createDrawsyBridge } from "../drawsy/bridge.js";
 import { readLocalEngineStatus } from "../drawsy/engine-status.js";
@@ -18,8 +19,8 @@ if (!gotSingleInstanceLock) {
   let tray: Tray | null = null;
   let closing = false;
 
-  const trayImage = nativeImage.createFromDataURL(
-    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+  const trayImage = nativeImage.createFromPath(
+    path.join(app.getAppPath(), "build/icon.png")
   );
 
   const engineLabel = (name: string, installed: boolean, version?: string) =>
