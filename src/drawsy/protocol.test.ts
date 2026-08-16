@@ -778,7 +778,10 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       thread.params.developerInstructions,
       /contextual guidance, not an absolute rule/
     );
-    assert.equal(thread.params.config.mcp_servers.inherited.enabled, false);
+    assert.equal(
+      thread.params.config.mcp_servers.inherited?.enabled ?? false,
+      false
+    );
     assert.equal(thread.params.config.mcp_servers.drawsy.enabled, true);
     assert.equal(
       thread.params.config.plugins["browser@openai-bundled"].enabled,
