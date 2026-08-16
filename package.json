@@ -1,13 +1,17 @@
 {
   "name": "@drawsy/companion",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.11.0",
   "description": "Drawsy's local desktop companion, bridge, and surface-scoped MCP",
-  "author": "Drawsy",
+  "author": {
+    "name": "Drawsy",
+    "email": "opensource@drawsyai.tech"
+  },
   "license": "MIT",
   "main": "dist/app/main.js",
+  "desktopName": "drawsy-companion",
   "bin": {
     "drawsy-companion": "dist/drawsy/bridge-main.js",
     "drawsy-ai-mcp": "dist/drawsy/mcp.js"
@@ -67,7 +71,12 @@
     },
     "linux": {
       "category": "Utility",
+      "syncDesktopName": true,
       "target": ["AppImage", "deb"]
+    },
+    "deb": {
+      "artifactName": "drawsy-companion_${version}_${arch}.${ext}",
+      "packageName": "drawsy-companion"
     }
   }
 }
