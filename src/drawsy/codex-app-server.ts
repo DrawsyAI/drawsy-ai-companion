@@ -530,7 +530,6 @@ export class CodexAppServer {
       [
         "app-server",
         "--stdio",
-        "--strict-config",
         "--disable",
         "apps",
         "--disable",

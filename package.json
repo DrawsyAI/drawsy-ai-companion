@@ -1,6 +1,6 @@
 {
   "name": "@drawsy/companion",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.11.0",
@@ -18,7 +18,8 @@
   },
   "scripts": {
     "clean": "node scripts/clean.mjs",
-    "build": "tsc -p tsconfig.drawsy.json",
+    "build": "tsc -p tsconfig.drawsy.json && pnpm build:mcp",
+    "build:mcp": "node scripts/build-mcp.mjs",
     "build:app": "pnpm build",
     "dev": "pnpm build && electron .",
     "start": "electron .",
@@ -42,6 +43,7 @@
     "@types/node": "^22.0.0",
     "electron": "^39.0.0",
     "electron-builder": "^26.0.12",
+    "esbuild": "0.28.2",
     "typescript": "^5.9.3"
   },
   "build": {
