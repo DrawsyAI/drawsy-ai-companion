@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   chmod,
+  mkdir,
   mkdtemp,
   readFile,
   realpath,
@@ -275,6 +276,41 @@ const freePort = () =>
       const port = typeof address === "object" && address ? address.port : 0;
       server.close((error) => (error ? reject(error) : resolve(port)));
     });
+});
+
+test("bridge uses an application-provided folder picker", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "drawsy-folder-picker-test-"));
+  const selectedFolder = path.join(root, "workspace");
+  const port = await freePort();
+  const origin = "http://localhost:3001";
+  await mkdir(selectedFolder);
+
+  const bridge = createDrawsyBridge({
+    port,
+    allowedOrigins: [origin],
+    folderPicker: async () => ({
+      path: selectedFolder,
+      name: "workspace"
+    })
+  });
+
+  try {
+    await bridge.listen();
+    const response = await fetch(`${bridge.address}/v1/folders/pick`, {
+      method: "POST",
+      headers: { origin }
+    });
+    assert.equal(response.status, 200);
+    const picked = (await response.json()) as {
+      selectionId: string;
+      name: string;
+    };
+    assert.ok(picked.selectionId);
+    assert.equal(picked.name, "workspace");
+  } finally {
+    await bridge.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("live previews stay on loopback and use bounded geometry", () => {

@@ -29,7 +29,7 @@ import {
   LocalConversationStore,
   type LocalConversationPreferences
 } from "./local-conversation-store.js";
-import { pickFolder } from "./folder-picker.js";
+import { pickFolder, type PickedFolder } from "./folder-picker.js";
 import { readLocalEngineStatus } from "./engine-status.js";
 import {
   createCanvasImageAsset,
@@ -389,6 +389,7 @@ export const createDrawsyBridge = (
     port?: number;
     host?: string;
     allowedOrigins?: string[];
+    folderPicker?: () => Promise<PickedFolder>;
   } = {}
 ) => {
   const port = options.port ?? Number(process.env.PORT || 3031);
@@ -1394,7 +1395,7 @@ export const createDrawsyBridge = (
       }
 
       if (request.method === "POST" && url.pathname === "/v1/folders/pick") {
-        const folder = await pickFolder();
+        const folder = await (options.folderPicker ?? pickFolder)();
         const selection: FolderSelection = {
           id: randomUUID(),
           ...folder,

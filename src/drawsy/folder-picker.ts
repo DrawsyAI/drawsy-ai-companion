@@ -2,6 +2,11 @@ import { spawn } from "node:child_process";
 import { realpath, stat } from "node:fs/promises";
 import path from "node:path";
 
+export type PickedFolder = {
+  path: string;
+  name: string;
+};
+
 const runPicker = (command: string, args: string[]) =>
   new Promise<string>((resolve, reject) => {
     const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -51,16 +56,22 @@ const pickerCommand = (): [string, string[]] => {
   ];
 };
 
-export const pickFolder = async () => {
+export const normalizeFolder = async (
+  rawPath: string
+): Promise<PickedFolder> => {
+  const folderPath = await realpath(rawPath);
+  if (!(await stat(folderPath)).isDirectory()) {
+    throw new Error("The selected path is not a folder.");
+  }
+  return { path: folderPath, name: path.basename(folderPath) || folderPath };
+};
+
+export const pickFolder = async (): Promise<PickedFolder> => {
   const defaultFolder =
     process.env.DRAWSY_WORKSPACE_FOLDER ||
     (process.env.NODE_ENV === "test"
       ? process.env.DRAWSY_TEST_FOLDER
       : undefined);
   const rawPath = defaultFolder ?? (await runPicker(...pickerCommand()));
-  const folderPath = await realpath(rawPath);
-  if (!(await stat(folderPath)).isDirectory()) {
-    throw new Error("The selected path is not a folder.");
-  }
-  return { path: folderPath, name: path.basename(folderPath) || folderPath };
+  return normalizeFolder(rawPath);
 };
