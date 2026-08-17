@@ -6,6 +6,8 @@ import {
   nativeImage,
   Tray
 } from "electron";
+import type { OpenDialogOptions } from "electron";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { createDrawsyBridge } from "../drawsy/bridge.js";
@@ -17,20 +19,77 @@ const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
   app.quit();
 } else {
+  let presenceWindow: BrowserWindow | null = null;
+
+  const folderPreferencesPath = () =>
+    path.join(app.getPath("userData"), "folder-preferences.json");
+
+  const readLastFolder = async () => {
+    try {
+      const value = JSON.parse(
+        await readFile(folderPreferencesPath(), "utf8")
+      ) as { lastFolder?: unknown };
+      if (typeof value.lastFolder !== "string" || !value.lastFolder.trim()) {
+        return undefined;
+      }
+      const details = await stat(value.lastFolder);
+      return details.isDirectory() ? value.lastFolder : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
+  const rememberFolder = async (folderPath: string) => {
+    try {
+      await mkdir(app.getPath("userData"), { recursive: true });
+      await writeFile(
+        folderPreferencesPath(),
+        `${JSON.stringify({ lastFolder: folderPath })}\n`,
+        { encoding: "utf8", mode: 0o600 }
+      );
+    } catch (error) {
+      console.warn("Drawsy Companion could not remember the selected folder.", error);
+    }
+  };
+
   const nativeFolderPicker =
     process.platform === "win32" || process.platform === "linux"
       ? async () => {
           const configuredFolder = process.env.DRAWSY_WORKSPACE_FOLDER?.trim();
           if (configuredFolder) return normalizeFolder(configuredFolder);
 
-          const result = await dialog.showOpenDialog({
-            title: "Choose a folder for Drawsy AI",
-            properties: ["openDirectory", "dontAddToRecent"]
-          });
-          if (result.canceled || !result.filePaths[0]) {
-            throw new Error("Folder selection was cancelled.");
+          const parentWindow =
+            presenceWindow && !presenceWindow.isDestroyed()
+              ? presenceWindow
+              : undefined;
+          const wasMinimized = parentWindow?.isMinimized() ?? false;
+          if (parentWindow) {
+            if (wasMinimized) parentWindow.restore();
+            parentWindow.show();
+            parentWindow.focus();
           }
-          return normalizeFolder(result.filePaths[0]);
+
+          try {
+            const pickerOptions: OpenDialogOptions = {
+              title: "Choose a folder for Drawsy AI",
+              defaultPath: (await readLastFolder()) ?? app.getPath("documents"),
+              buttonLabel: "Choose Folder",
+              properties: ["openDirectory", "dontAddToRecent"]
+            };
+            const result = parentWindow
+              ? await dialog.showOpenDialog(parentWindow, pickerOptions)
+              : await dialog.showOpenDialog(pickerOptions);
+            if (result.canceled || !result.filePaths[0]) {
+              throw new Error("Folder selection was cancelled.");
+            }
+            const folder = await normalizeFolder(result.filePaths[0]);
+            await rememberFolder(folder.path);
+            return folder;
+          } finally {
+            if (wasMinimized && parentWindow && !parentWindow.isDestroyed()) {
+              parentWindow.minimize();
+            }
+          }
         }
       : undefined;
   const bridge = createDrawsyBridge({
@@ -38,7 +97,6 @@ if (!gotSingleInstanceLock) {
     folderPicker: nativeFolderPicker
   });
   let tray: Tray | null = null;
-  let presenceWindow: BrowserWindow | null = null;
   let closing = false;
 
   const trayImage = nativeImage.createFromPath(
@@ -171,8 +229,8 @@ if (!gotSingleInstanceLock) {
       app.setLoginItemSettings({ openAtLogin: false });
     }
 
-    await bridge.listen();
     createPresenceWindow();
+    await bridge.listen();
     tray = new Tray(trayImage);
     tray.setToolTip("Drawsy Companion");
     refreshMenu();
