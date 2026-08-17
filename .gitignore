@@ -2,6 +2,9 @@ node_modules/
 dist/
 dist-test/
 release/
+
+release-*/
+
 .DS_Store
 *.mcpb
 .vscode

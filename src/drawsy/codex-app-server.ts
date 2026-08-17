@@ -24,6 +24,7 @@ import {
   drawsyMcpProcess,
   resolveDrawsyMcpEntry
 } from "./mcp-launcher.js";
+import { executableEnvironment } from "./executable-resolver.js";
 
 class CodexRpcError extends Error {
   readonly code: number | string | null;
@@ -468,7 +469,7 @@ const blockedCapability = (value: string) =>
   /(^|[-_\s])(browser|chrome|computer)([-_\s]|$)/i.test(value);
 
 const codexEnvironment = (previewPort: number | null) => {
-  const environment = { ...process.env };
+  const environment = executableEnvironment();
   delete environment.PORT;
   if (previewPort) {
     environment.PORT = String(previewPort);
@@ -518,8 +519,14 @@ export class CodexAppServer {
       result?: string;
     }) => void
   ) {
+    const codexBinary = resolveCodexBinary();
+    if (!codexBinary) {
+      throw new Error(
+        "Codex was not found. Install or launch Codex on this device, then refresh the Companion engine status."
+      );
+    }
     this.process = spawn(
-      resolveCodexBinary(),
+      codexBinary,
       [
         "app-server",
         "--stdio",
@@ -607,17 +614,18 @@ export class CodexAppServer {
       result?: string;
     }) => void = () => undefined
   ) {
-    const server = new CodexAppServer(
-      folderPath,
-      session,
-      emit,
-      registerGeneratedImage
-    );
+    let server: CodexAppServer | null = null;
     try {
+      server = new CodexAppServer(
+        folderPath,
+        session,
+        emit,
+        registerGeneratedImage
+      );
       await server.initialize();
       return server;
     } catch (error) {
-      server.close();
+      server?.close();
       throw error;
     }
   }
