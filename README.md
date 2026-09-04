@@ -18,7 +18,7 @@ Installers are published on the [GitHub Releases page](https://github.com/Drawsy
 | Windows | `.exe` installer, `.zip` |
 | Linux | `.AppImage`, `.deb` |
 
-Install and launch the companion when you want to use local mode. It stays visible as a tray/menu-bar application while it is running and listens only on loopback. It does not start automatically when you sign in. Quit the companion from its tray/menu-bar menu to stop local access; a terminal process is not required for normal use.
+Install and launch the companion when you want to use local mode. It stays visible as a tray/menu-bar application while it is running and listens only on loopback. On Windows and Linux it runs without a taskbar window; click the tray icon or choose **Open status window** when you want to see its status. Closing that status window hides it back to the tray. It does not start automatically when you sign in. Choose **Quit Drawsy Companion** from the tray/menu-bar menu to stop local access; a terminal process is not required for normal use.
 
 The companion does not install, bundle, or authenticate Codex or OpenCode. The user must already have one of those engines available on the device. The tray status reports which engine is detected. Codex is supported on the packaged desktop targets; the current OpenCode runtime supports macOS and Linux.
 

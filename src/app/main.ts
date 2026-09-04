@@ -119,6 +119,14 @@ if (!gotSingleInstanceLock) {
           label: "Local bridge: http://127.0.0.1:3031",
           enabled: false
         },
+        ...(process.platform === "darwin"
+          ? []
+          : [
+              {
+                label: "Open status window",
+                click: showPresenceWindow
+              }
+            ]),
         { type: "separator" },
         ...engines.map((engine) => ({
           label: engineLabel(engine.name, engine.installed, engine.version),
@@ -168,7 +176,7 @@ if (!gotSingleInstanceLock) {
       title: "Drawsy Companion",
       icon: path.join(app.getAppPath(), "build/icon.png"),
       show: false,
-      skipTaskbar: false,
+      skipTaskbar: true,
       autoHideMenuBar: true,
       backgroundColor: "#15131d",
       webPreferences: {
@@ -205,15 +213,10 @@ if (!gotSingleInstanceLock) {
     void presenceWindow.loadURL(
       `data:text/html;charset=utf-8,${encodeURIComponent(statusPage)}`
     );
-    presenceWindow.once("ready-to-show", () => {
-      if (!presenceWindow || closing) return;
-      presenceWindow.showInactive();
-      presenceWindow.minimize();
-    });
     presenceWindow.on("close", (event) => {
       if (closing) return;
       event.preventDefault();
-      void shutdown();
+      presenceWindow?.hide();
     });
     presenceWindow.on("closed", () => {
       presenceWindow = null;
@@ -233,6 +236,9 @@ if (!gotSingleInstanceLock) {
     await bridge.listen();
     tray = new Tray(trayImage);
     tray.setToolTip("Drawsy Companion");
+    if (process.platform !== "darwin") {
+      tray.on("click", showPresenceWindow);
+    }
     refreshMenu();
   };
 
@@ -249,6 +255,12 @@ if (!gotSingleInstanceLock) {
       showPresenceWindow();
     }
   });
+
+  if (process.platform !== "darwin") {
+    app.on("window-all-closed", () => {
+      // The tray icon owns the application lifetime on Windows and Linux.
+    });
+  }
 
   app.on("before-quit", (event) => {
     if (closing) return;
