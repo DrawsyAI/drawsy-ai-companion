@@ -94,6 +94,8 @@ jobs:
 
           security create-keychain -p "$keychain_password" "$keychain_path"
           security set-keychain-settings -lut 21600 "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+          security default-keychain -s "$keychain_path"
           security unlock-keychain -p "$keychain_password" "$keychain_path"
           security import "$certificate_path" \
             -k "$keychain_path" \
@@ -110,14 +112,19 @@ jobs:
             -k "$keychain_password" \
             "$keychain_path"
 
-          if ! security find-identity -v -p codesigning "$keychain_path" | grep -q 'Developer ID Application:'; then
+          identity_hash="$(
+            security find-identity -v -p codesigning "$keychain_path" \
+              | awk '/Developer ID Application:/ && !hash { hash = $2 } END { print hash }'
+          )"
+
+          if [[ ! "$identity_hash" =~ ^[A-F0-9]{40}$ ]]; then
             echo '::error::The macOS signing identity was not found in the temporary keychain.'
             exit 1
           fi
 
           {
             printf 'CSC_KEYCHAIN=%s\n' "$keychain_path"
-            printf 'CSC_NAME=Developer ID Application\n'
+            printf 'CSC_NAME=%s\n' "$identity_hash"
             printf 'APPLE_API_KEY=%s\n' "$api_key_path"
             printf 'APPLE_API_KEY_ID=%s\n' "$APPLE_API_KEY_ID"
             printf 'APPLE_API_ISSUER=%s\n' "$APPLE_API_ISSUER"
