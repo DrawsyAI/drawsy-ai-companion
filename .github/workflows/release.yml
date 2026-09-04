@@ -38,6 +38,18 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      - name: Validate release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          package_version="$(node -p "require('./package.json').version")"
+          expected_tag="v${package_version}"
+          if [[ "$GITHUB_REF_NAME" != "$expected_tag" ]]; then
+            echo "::error::Release tag ${GITHUB_REF_NAME} does not match package version ${package_version}."
+            exit 1
+          fi
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -53,6 +65,7 @@ jobs:
           APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          MAC_RECOVERY_ENCRYPTION_KEY: ${{ secrets.MAC_RECOVERY_ENCRYPTION_KEY }}
         run: |
           set -euo pipefail
           umask 077
@@ -63,6 +76,7 @@ jobs:
             APPLE_API_KEY_BASE64
             APPLE_API_KEY_ID
             APPLE_API_ISSUER
+            MAC_RECOVERY_ENCRYPTION_KEY
           )
 
           for secret_name in "${required_secrets[@]}"; do
@@ -131,7 +145,172 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Package installer
+        if: matrix.artifact != 'macos'
         run: pnpm run package
+
+      - name: Build signed macOS application
+        if: matrix.artifact == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          pnpm clean
+          pnpm build
+          pnpm exec electron-builder \
+            --mac dir \
+            --arm64 \
+            --publish never \
+            --config.mac.notarize=false \
+            --config.mac.forceCodeSigning=true \
+            --config.mac.hardenedRuntime=true
+
+          app_path='release/mac-arm64/drawsy-companion.app'
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+
+          archive_path="${RUNNER_TEMP}/drawsy-companion-signed-app.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$app_path" "$archive_path"
+
+          printf 'MAC_SIGNED_APP_ARCHIVE=%s\n' "$archive_path" >> "$GITHUB_ENV"
+
+      - name: Submit macOS notarization
+        if: matrix.artifact == 'macos'
+        id: notarization
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          submission_path="${RUNNER_TEMP}/drawsy-companion-notarization-submission.json"
+          metadata_path="${RUNNER_TEMP}/drawsy-companion-notarization.json"
+
+          xcrun notarytool submit "$MAC_SIGNED_APP_ARCHIVE" \
+            --key "$APPLE_API_KEY" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER" \
+            --no-wait \
+            --output-format json \
+            > "$submission_path"
+
+          submission_id="$(plutil -extract id raw -o - "$submission_path")"
+          if [[ ! "$submission_id" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+            echo '::error::Apple did not return a valid notarization submission ID.'
+            exit 1
+          fi
+
+          jq -n \
+            --arg submissionId "$submission_id" \
+            --arg tag "$GITHUB_REF_NAME" \
+            --arg sourceRunId "$GITHUB_RUN_ID" \
+            '{submissionId: $submissionId, tag: $tag, sourceRunId: $sourceRunId}' \
+            > "$metadata_path"
+
+          {
+            printf 'MAC_NOTARIZATION_SUBMISSION_ID=%s\n' "$submission_id"
+            printf 'MAC_NOTARIZATION_METADATA=%s\n' "$metadata_path"
+            printf 'MAC_NOTARIZATION_SUBMISSION=%s\n' "$submission_path"
+          } >> "$GITHUB_ENV"
+
+      - name: Create encrypted macOS recovery bundle
+        if: matrix.artifact == 'macos'
+        shell: bash
+        env:
+          MAC_RECOVERY_ENCRYPTION_KEY: ${{ secrets.MAC_RECOVERY_ENCRYPTION_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+
+          if [[ -z "$MAC_RECOVERY_ENCRYPTION_KEY" ]]; then
+            echo '::error::Missing macOS recovery encryption secret.'
+            exit 1
+          fi
+
+          recovery_archive="${RUNNER_TEMP}/drawsy-companion-macos-recovery.tar"
+          recovery_bundle="${recovery_archive}.enc"
+          recovery_hmac="${recovery_bundle}.hmac"
+
+          tar -cf "$recovery_archive" \
+            -C "$RUNNER_TEMP" \
+            "$(basename "$MAC_SIGNED_APP_ARCHIVE")" \
+            "$(basename "$MAC_NOTARIZATION_METADATA")"
+
+          openssl enc -aes-256-cbc \
+            -salt \
+            -pbkdf2 \
+            -iter 200000 \
+            -md sha256 \
+            -in "$recovery_archive" \
+            -out "$recovery_bundle" \
+            -pass env:MAC_RECOVERY_ENCRYPTION_KEY
+
+          node --input-type=module - "$recovery_bundle" "$recovery_hmac" <<'NODE'
+          import { createHmac } from 'node:crypto';
+          import { readFileSync, writeFileSync } from 'node:fs';
+
+          const [inputPath, outputPath] = process.argv.slice(2);
+          const key = process.env.MAC_RECOVERY_ENCRYPTION_KEY;
+          const digest = createHmac('sha256', key)
+            .update(readFileSync(inputPath))
+            .digest('hex');
+          writeFileSync(outputPath, `${digest}\n`, { mode: 0o600 });
+          NODE
+
+          rm -f "$recovery_archive"
+          {
+            printf 'MAC_NOTARIZATION_RECOVERY_BUNDLE=%s\n' "$recovery_bundle"
+            printf 'MAC_NOTARIZATION_RECOVERY_HMAC=%s\n' "$recovery_hmac"
+          } >> "$GITHUB_ENV"
+
+      - name: Preserve encrypted macOS recovery bundle
+        if: matrix.artifact == 'macos'
+        uses: actions/upload-artifact@v4
+        with:
+          name: drawsy-companion-macos-recovery
+          path: |
+            ${{ env.MAC_NOTARIZATION_RECOVERY_BUNDLE }}
+            ${{ env.MAC_NOTARIZATION_RECOVERY_HMAC }}
+          if-no-files-found: error
+
+      - name: Wait for macOS notarization
+        if: matrix.artifact == 'macos'
+        timeout-minutes: 25
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          result_path="${RUNNER_TEMP}/drawsy-companion-notarization-result.json"
+          printf 'MAC_NOTARIZATION_RESULT=%s\n' "$result_path" >> "$GITHUB_ENV"
+
+          xcrun notarytool wait "$MAC_NOTARIZATION_SUBMISSION_ID" \
+            --key "$APPLE_API_KEY" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER" \
+            --timeout 20m \
+            --output-format json \
+            > "$result_path"
+
+          status="$(plutil -extract status raw -o - "$result_path")"
+          if [[ "$status" != 'Accepted' ]]; then
+            echo "::error::Apple notarization ended with status: ${status}"
+            exit 1
+          fi
+
+      - name: Staple and package notarized macOS application
+        if: matrix.artifact == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          app_path='release/mac-arm64/drawsy-companion.app'
+          xcrun stapler staple "$app_path"
+          xcrun stapler validate "$app_path"
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          spctl --assess --type execute --verbose=2 "$app_path"
+
+          CSC_IDENTITY_AUTO_DISCOVERY=false pnpm exec electron-builder \
+            --prepackaged "$app_path" \
+            --mac dmg zip \
+            --arm64 \
+            --publish never \
+            --config.mac.notarize=false
 
       - name: Upload platform artifacts
         uses: actions/upload-artifact@v4
@@ -154,7 +333,13 @@ jobs:
           for path in \
             "${MAC_SIGNING_CERTIFICATE:-}" \
             "${MAC_SIGNING_INTERMEDIARY:-}" \
-            "${MAC_SIGNING_API_KEY:-}"; do
+            "${MAC_SIGNING_API_KEY:-}" \
+            "${MAC_SIGNED_APP_ARCHIVE:-}" \
+            "${MAC_NOTARIZATION_METADATA:-}" \
+            "${MAC_NOTARIZATION_SUBMISSION:-}" \
+            "${MAC_NOTARIZATION_RESULT:-}" \
+            "${MAC_NOTARIZATION_RECOVERY_BUNDLE:-}" \
+            "${MAC_NOTARIZATION_RECOVERY_HMAC:-}"; do
             if [[ -n "$path" ]]; then
               rm -f "$path"
             fi
