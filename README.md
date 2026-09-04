@@ -130,7 +130,7 @@ Pushing a version tag matching `v*` starts the release workflow. The workflow:
 
 The release page is the end-user distribution surface: [Drawsy Companion Releases](https://github.com/DrawsyAI/drawsy-ai-companion/releases/latest).
 
-The macOS release job signs the app with an Apple Developer ID Application certificate and notarizes the packaged artifacts with an App Store Connect Team API key. The credentials are supplied only through GitHub Actions secrets; no certificate, private key, or account credential is stored in this repository.
+The macOS release job signs the app with an Apple Developer ID Application certificate and submits the preserved signed app to Apple with an App Store Connect Team API key. It waits up to 20 minutes for the normal notarization path, then staples and validates Apple's ticket before creating the public DMG and ZIP. The credentials are supplied only through GitHub Actions secrets; no certificate, private key, or account credential is stored in this repository.
 
 Configure these repository secrets before pushing a release tag:
 
@@ -139,8 +139,9 @@ Configure these repository secrets before pushing a release tag:
 - `APPLE_API_KEY_BASE64` — one-line base64 of the App Store Connect Team API `.p8` key.
 - `APPLE_API_KEY_ID` — the 10-character Team API key ID.
 - `APPLE_API_ISSUER` — the App Store Connect issuer UUID.
+- `MAC_RECOVERY_ENCRYPTION_KEY` — a random high-entropy secret used only to encrypt resumable Mac release artifacts.
 
-The workflow reconstructs the `.p8` only in the macOS runner’s temporary directory, passes its path to `notarytool`, and fails before packaging if any Mac signing secret is missing. The current Windows and Linux artifacts remain unsigned until their platform signing configuration is added.
+The workflow reconstructs the `.p8` only in the macOS runner’s temporary directory, passes its path to `notarytool`, and fails before packaging if any Mac signing secret is missing. Before waiting on Apple, it preserves the signed app and notarization metadata in an encrypted GitHub Actions recovery artifact; the plaintext app and credentials are not exposed through the public repository. If Apple holds a submission longer than the bounded wait, do not rerun the release and create a duplicate submission. After Apple reports `Accepted`, run **Finalize Delayed macOS Release** with the source release workflow run ID; it restores the exact signed app, staples and validates the ticket, packages the DMG and ZIP, and publishes the complete release. The current Windows and Linux artifacts remain unsigned until their platform signing configuration is added.
 
 ## Contributing
 
