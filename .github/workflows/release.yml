@@ -44,6 +44,85 @@ jobs:
       - name: Build and test
         run: pnpm run check
 
+      - name: Prepare macOS signing credentials
+        if: matrix.artifact == 'macos'
+        shell: bash
+        env:
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          umask 077
+
+          required_secrets=(
+            MAC_CSC_LINK
+            MAC_CSC_KEY_PASSWORD
+            APPLE_API_KEY_BASE64
+            APPLE_API_KEY_ID
+            APPLE_API_ISSUER
+          )
+
+          for secret_name in "${required_secrets[@]}"; do
+            if [[ -z "${!secret_name}" ]]; then
+              echo "::error::Missing macOS signing secret: ${secret_name}"
+              exit 1
+            fi
+          done
+
+          keychain_path="${RUNNER_TEMP}/drawsy-companion-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 32)"
+          certificate_path="${RUNNER_TEMP}/drawsy-companion-signing.p12"
+          intermediary_path="${RUNNER_TEMP}/DeveloperIDG2CA.cer"
+          api_key_path="${RUNNER_TEMP}/AuthKey_${APPLE_API_KEY_ID}.p8"
+
+          {
+            printf 'MAC_SIGNING_KEYCHAIN=%s\n' "$keychain_path"
+            printf 'MAC_SIGNING_CERTIFICATE=%s\n' "$certificate_path"
+            printf 'MAC_SIGNING_INTERMEDIARY=%s\n' "$intermediary_path"
+            printf 'MAC_SIGNING_API_KEY=%s\n' "$api_key_path"
+          } >> "$GITHUB_ENV"
+
+          printf '%s' "$MAC_CSC_LINK" | base64 -D > "$certificate_path"
+          curl --fail --silent --show-error --location \
+            'https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer' \
+            --output "$intermediary_path"
+          printf '%s' "$APPLE_API_KEY_BASE64" | base64 -D > "$api_key_path"
+          chmod 600 "$certificate_path" "$intermediary_path" "$api_key_path"
+
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$certificate_path" \
+            -k "$keychain_path" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/productbuild \
+            -P "$MAC_CSC_KEY_PASSWORD"
+          security import "$intermediary_path" \
+            -k "$keychain_path" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/productbuild
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s \
+            -k "$keychain_password" \
+            "$keychain_path"
+
+          if ! security find-identity -v -p codesigning "$keychain_path" | grep -q 'Developer ID Application:'; then
+            echo '::error::The macOS signing identity was not found in the temporary keychain.'
+            exit 1
+          fi
+
+          {
+            printf 'CSC_KEYCHAIN=%s\n' "$keychain_path"
+            printf 'CSC_NAME=Developer ID Application\n'
+            printf 'APPLE_API_KEY=%s\n' "$api_key_path"
+            printf 'APPLE_API_KEY_ID=%s\n' "$APPLE_API_KEY_ID"
+            printf 'APPLE_API_ISSUER=%s\n' "$APPLE_API_ISSUER"
+          } >> "$GITHUB_ENV"
+
       - name: Package installer
         run: pnpm run package
 
@@ -58,6 +137,25 @@ jobs:
             release/*.AppImage
             release/*.deb
           if-no-files-found: error
+
+      - name: Clean up macOS signing credentials
+        if: ${{ always() && matrix.artifact == 'macos' }}
+        shell: bash
+        run: |
+          set -u
+
+          for path in \
+            "${MAC_SIGNING_CERTIFICATE:-}" \
+            "${MAC_SIGNING_INTERMEDIARY:-}" \
+            "${MAC_SIGNING_API_KEY:-}"; do
+            if [[ -n "$path" ]]; then
+              rm -f "$path"
+            fi
+          done
+
+          if [[ -n "${MAC_SIGNING_KEYCHAIN:-}" ]]; then
+            security delete-keychain "$MAC_SIGNING_KEYCHAIN" >/dev/null 2>&1 || true
+          fi
 
   publish-release:
     name: Publish GitHub Release
