@@ -355,11 +355,37 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Download packaged artifacts
+      - name: Download Linux artifacts
         uses: actions/download-artifact@v4
         with:
+          name: drawsy-companion-linux
           path: release-artifacts
-          merge-multiple: true
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: drawsy-companion-windows
+          path: release-artifacts
+
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: drawsy-companion-macos
+          path: release-artifacts
+
+      - name: Normalize release filenames
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          while IFS= read -r -d '' file; do
+            normalized="${file// /.}"
+            if [[ -e "$normalized" ]]; then
+              echo "::error::Cannot normalize release filename because ${normalized} already exists."
+              exit 1
+            fi
+            mv "$file" "$normalized"
+          done < <(find release-artifacts -maxdepth 1 -type f -name '* *' -print0)
 
       - name: Generate checksums
         shell: bash

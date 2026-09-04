@@ -242,6 +242,15 @@ jobs:
             \( -name '*.dmg' -o -name '*.zip' \) \
             -exec cp '{}' release-artifacts/ \;
 
+          while IFS= read -r -d '' file; do
+            normalized="${file// /.}"
+            if [[ -e "$normalized" ]]; then
+              echo "::error::Cannot normalize release filename because ${normalized} already exists."
+              exit 1
+            fi
+            mv "$file" "$normalized"
+          done < <(find release-artifacts -maxdepth 1 -type f -name '* *' -print0)
+
           (
             cd release-artifacts
             for file in *; do
