@@ -1235,6 +1235,18 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       startsBeforeConcurrentResume + 1,
       "simultaneous resumes must share one native runtime"
     );
+    const concurrentLog = (await readFile(requestLog, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    const canvasThread = concurrentLog
+      .filter((message) => message.method === "thread/start")
+      .at(-1);
+    assert.equal(canvasThread.params.dynamicTools[0].name, "drawsy_canvas");
+    assert.equal(
+      canvasThread.params.dynamicTools[0].tools[0].name,
+      "draw_batch"
+    );
     const secondTabResponse = await fetch(`${bridge.address}/v1/sessions`, {
       method: "POST",
       headers,
