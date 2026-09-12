@@ -228,16 +228,6 @@ export type AgentResourceTurn = {
 
 export type BridgeEvent =
   | {
-      type: "draw.request";
-      data: {
-        requestId: string;
-        canvasId: string;
-        turnId: string;
-        callId: string;
-        batch: DrawModeBatch;
-      };
-    }
-  | {
       type: "session.ready";
       data: { folderName: string; agent: AgentMetadata };
     }
@@ -273,26 +263,6 @@ export type BridgeEvent =
       };
     }
   | { type: "error"; data: { message: string; code: string } };
-
-export type DrawModePoint = { x: number; y: number };
-
-export type DrawModeCommand = {
-  id: string;
-  type: "freedraw" | "rectangle" | "ellipse" | "diamond" | "line" | "arrow" | "text";
-  points: DrawModePoint[];
-  text?: string;
-  strokeColor?: string;
-  backgroundColor?: string;
-  strokeWidth?: 1 | 2 | 4;
-  fontSize?: number;
-};
-
-export type DrawModeBatch = {
-  runId: string;
-  batchId: string;
-  final: boolean;
-  commands: DrawModeCommand[];
-};
 
 export const isRecord = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
