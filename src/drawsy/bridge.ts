@@ -62,6 +62,7 @@ import {
   type CanvasOperations,
   type LivePreviewRequest,
   type DrawsySurfaceKind,
+  type DrawModeBatch,
 } from "./protocol.js";
 
 type FolderSelection = {
@@ -1081,6 +1082,36 @@ export const createDrawsyBridge = (
     });
   };
 
+  const requestDrawMode = (session: Session, input: Record<string, unknown>) => {
+    if (session.surfaceKind !== "canvas" || !session.canvasId) {
+      throw new Error("Draw Mode is available only on the current Drawsy canvas.");
+    }
+    if (!session.clients.size) {
+      throw new Error("The Drawsy canvas is not connected.");
+    }
+    const { turnId, callId, ...rawBatch } = input;
+    if (typeof turnId !== "string" || typeof callId !== "string") {
+      throw new Error("The Draw Mode call identity is invalid.");
+    }
+    const batch = rawBatch as DrawModeBatch;
+    const requestId = randomUUID();
+    emit(session, {
+      type: "draw.request",
+      data: { requestId, canvasId: session.canvasId, turnId, callId, batch },
+    });
+    return new Promise<Record<string, unknown>>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        session.canvasPending.delete(requestId);
+        reject(new Error("Draw Mode response timed out."));
+      }, configuredCanvasRequestTimeout);
+      session.canvasPending.set(requestId, {
+        resolve: (value) => resolve(isRecord(value) ? value : { ok: true }),
+        reject,
+        timer,
+      });
+    });
+  };
+
   const readImportableImage = async (session: Session, sourcePath: string) => {
     const normalizedSource = path.isAbsolute(sourcePath)
       ? path.resolve(sourcePath)
@@ -1728,7 +1759,13 @@ export const createDrawsyBridge = (
                     if (sessionRef.generatedImages.length > 8) {
                       sessionRef.generatedImages.shift();
                     }
-                  }
+                  },
+                  (input) => {
+                    if (!sessionRef) {
+                      throw new Error("The Drawsy canvas is not connected.");
+                    }
+                    return requestDrawMode(sessionRef, input);
+                  },
                 );
               try {
                 agent = await startCodex(localConversation.codexThreadId);
@@ -1840,6 +1877,24 @@ export const createDrawsyBridge = (
       }
 
       const turnMatch = url.pathname.match(/^\/v1\/sessions\/([^/]+)\/turns$/);
+      const interruptTurnMatch = url.pathname.match(
+        /^\/v1\/sessions\/([^/]+)\/turns\/interrupt$/,
+      );
+      if (request.method === "POST" && interruptTurnMatch) {
+        const session = publicSession(
+          request,
+          response,
+          decodeURIComponent(interruptTurnMatch[1]!),
+        );
+        if (!session) return;
+        if (session.engine !== "codex") {
+          json(response, 400, { error: { code: "unsupported", message: "Turn interruption is unavailable." } });
+          return;
+        }
+        await (session.agent as CodexAppServer).interruptTurn();
+        json(response, 200, { interrupted: true });
+        return;
+      }
       if (request.method === "POST" && turnMatch) {
         const session = publicSession(
           request,
@@ -1861,11 +1916,23 @@ export const createDrawsyBridge = (
         }
         const connectorTurn = parseAgentConnectorTurn(body.connectors);
         const resourceTurn = parseAgentResourceTurn(body.resources);
+        const drawMode = body.drawMode === true;
+        if (drawMode && (session.engine !== "codex" || session.surfaceKind !== "canvas")) {
+          json(response, 400, {
+            error: {
+              code: "draw_mode_unavailable",
+              message: "Draw Mode currently requires Codex on a Drawsy canvas.",
+            },
+          });
+          return;
+        }
         session.activeConnectorTurn = connectorTurn;
         session.activeResourceTurn = resourceTurn;
         try {
           await session.agent.startTurn(
-            message,
+            drawMode
+              ? `${message}\n\n[Draw Mode]\nUse only drawsy_canvas.draw_batch to create the requested visual. Compose editable native elements with scene coordinates. Work in short coherent batches and set final=true on the last batch. Use the returned canvas image to review placement before finishing. Do not use MCP canvas tools, browser tools, shell, or file edits for this drawing.`
+              : message,
             {
               skills: parsePromptTags(body.skills, "skills"),
               plugins: parsePromptTags(body.plugins, "plugins")
@@ -2035,6 +2102,32 @@ export const createDrawsyBridge = (
       const canvasResponseMatch = url.pathname.match(
         /^\/v1\/sessions\/([^/]+)\/canvas-responses$/
       );
+      const drawResponseMatch = url.pathname.match(
+        /^\/v1\/sessions\/([^/]+)\/draw-responses$/,
+      );
+      if (request.method === "POST" && drawResponseMatch) {
+        const session = publicSession(
+          request,
+          response,
+          decodeURIComponent(drawResponseMatch[1]!),
+        );
+        if (!session) return;
+        const body = await readJson(request);
+        const requestId = typeof body.requestId === "string" ? body.requestId : "";
+        const pending = session.canvasPending.get(requestId);
+        if (!pending) {
+          json(response, 404, {
+            error: { code: "request_not_found", message: "Draw Mode request expired." },
+          });
+          return;
+        }
+        session.canvasPending.delete(requestId);
+        clearTimeout(pending.timer);
+        if (body.ok === true) pending.resolve(body.data ?? { ok: true });
+        else pending.reject(new Error(typeof body.error === "string" ? body.error : "Draw Mode failed."));
+        json(response, 200, { accepted: true });
+        return;
+      }
       if (request.method === "POST" && canvasResponseMatch) {
         const session = publicSession(
           request,

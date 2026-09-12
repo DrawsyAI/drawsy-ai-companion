@@ -292,6 +292,13 @@ const describeToolItem = (item: JsonObject): ActiveTool | null => {
     };
   }
   if (item.type === "dynamicToolCall" && typeof item.tool === "string") {
+    if (item.tool === "draw_batch") {
+      return {
+        tool: "drawMode",
+        startedMessage: "Drawing on the canvas",
+        completedMessage: "Canvas pass complete",
+      };
+    }
     return {
       tool: item.tool,
       startedMessage: `Using ${item.tool}`,
@@ -485,6 +492,7 @@ export class CodexAppServer {
   private nextId = 1;
   private threadId: string | null = null;
   private turnActive = false;
+  private activeTurnId: string | null = null;
   private agentMetadata: AgentMetadata | null = null;
   private accessMode: AgentAccessMode = "workspace";
   private internetEnabled = true;
@@ -517,7 +525,8 @@ export class CodexAppServer {
       id: string;
       savedPath?: string;
       result?: string;
-    }) => void
+    }) => void,
+    private readonly executeDrawMode: (input: JsonObject) => Promise<JsonObject>
   ) {
     const codexBinary = resolveCodexBinary();
     if (!codexBinary) {
@@ -611,7 +620,10 @@ export class CodexAppServer {
       id: string;
       savedPath?: string;
       result?: string;
-    }) => void = () => undefined
+    }) => void = () => undefined,
+    executeDrawMode: (input: JsonObject) => Promise<JsonObject> = async () => {
+      throw new Error("Draw Mode is unavailable for this surface.");
+    }
   ) {
     let server: CodexAppServer | null = null;
     try {
@@ -619,7 +631,8 @@ export class CodexAppServer {
         folderPath,
         session,
         emit,
-        registerGeneratedImage
+        registerGeneratedImage,
+        executeDrawMode
       );
       await server.initialize();
       return server;
@@ -792,6 +805,68 @@ export class CodexAppServer {
         this.session.previewPort
       ),
       personality: "pragmatic",
+      ...(this.session.surfaceKind === "canvas"
+        ? {
+            dynamicTools: [
+              {
+                type: "namespace",
+                name: "drawsy_canvas",
+                description:
+                  "Draw directly on the current Drawsy canvas using editable native elements and a visible Drawsy cursor.",
+                tools: [
+                  {
+                    type: "function",
+                    name: "draw_batch",
+                    description:
+                      "Execute one bounded drawing batch. Use scene coordinates. Set final=true only on the last batch.",
+                    inputSchema: {
+                      type: "object",
+                      additionalProperties: false,
+                      required: ["runId", "batchId", "final", "commands"],
+                      properties: {
+                        runId: { type: "string", minLength: 1, maxLength: 128 },
+                        batchId: { type: "string", minLength: 1, maxLength: 128 },
+                        final: { type: "boolean" },
+                        commands: {
+                          type: "array",
+                          minItems: 1,
+                          maxItems: 50,
+                          items: {
+                            type: "object",
+                            additionalProperties: false,
+                            required: ["id", "type", "points"],
+                            properties: {
+                              id: { type: "string", minLength: 1, maxLength: 128 },
+                              type: {
+                                enum: ["freedraw", "rectangle", "ellipse", "diamond", "line", "arrow", "text"]
+                              },
+                              points: {
+                                type: "array",
+                                minItems: 1,
+                                maxItems: 256,
+                                items: {
+                                  type: "object",
+                                  additionalProperties: false,
+                                  required: ["x", "y"],
+                                  properties: { x: { type: "number" }, y: { type: "number" } }
+                                }
+                              },
+                              text: { type: "string", maxLength: 2000 },
+                              strokeColor: { type: "string", maxLength: 32 },
+                              backgroundColor: { type: "string", maxLength: 32 },
+                              strokeWidth: { enum: [1, 2, 4] },
+                              fontSize: { type: "number", minimum: 8, maximum: 120 }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        : {}),
       config: {
         ...this.threadBaseConfig,
         features: {
@@ -1001,6 +1076,14 @@ export class CodexAppServer {
       this.turnActive = false;
       throw error;
     }
+  }
+
+  async interruptTurn() {
+    if (!this.threadId || !this.activeTurnId || !this.turnActive) return;
+    await this.request("turn/interrupt", {
+      threadId: this.threadId,
+      turnId: this.activeTurnId,
+    });
   }
 
   async getControls(): Promise<AgentControls> {
@@ -1354,7 +1437,11 @@ export class CodexAppServer {
       typeof message.method === "string" &&
       (typeof message.id === "number" || typeof message.id === "string")
     ) {
-      this.handleServerRequest(message.id, message.method);
+      this.handleServerRequest(
+        message.id,
+        message.method,
+        isRecord(message.params) ? message.params : {},
+      );
       return;
     }
     if (typeof message.id === "number") {
@@ -1385,6 +1472,11 @@ export class CodexAppServer {
         this.rejectDrawsyMcp(new Error("Drawsy MCP failed to start."));
       }
     } else if (message.method === "turn/started") {
+      this.activeTurnId = isRecord(params.turn) && typeof params.turn.id === "string"
+        ? params.turn.id
+        : typeof params.turnId === "string"
+        ? params.turnId
+        : null;
       this.emit({ type: "turn.status", data: { status: "inProgress" } });
     } else if (message.method === "item/started" && isRecord(params.item)) {
       const item = params.item;
@@ -1564,6 +1656,7 @@ export class CodexAppServer {
       }
     } else if (message.method === "turn/completed" && isRecord(params.turn)) {
       this.turnActive = false;
+      this.activeTurnId = null;
       const error =
         isRecord(params.turn.error) &&
         typeof params.turn.error.message === "string"
@@ -1639,7 +1732,11 @@ export class CodexAppServer {
     }
   }
 
-  private handleServerRequest(id: string | number, method: string) {
+  private handleServerRequest(
+    id: string | number,
+    method: string,
+    params: JsonObject = {},
+  ) {
     if (
       method === "item/commandExecution/requestApproval" ||
       method === "item/fileChange/requestApproval"
@@ -1673,6 +1770,43 @@ export class CodexAppServer {
       return;
     }
     if (method === "item/tool/call") {
+      if (
+        params.namespace === "drawsy_canvas" &&
+        params.tool === "draw_batch" &&
+        isRecord(params.arguments)
+      ) {
+        void this.executeDrawMode({
+          ...params.arguments,
+          turnId: params.turnId,
+          callId: params.callId,
+        })
+          .then((result) => {
+            const imageUrl =
+              typeof result.imageUrl === "string" ? result.imageUrl : null;
+            this.respond(id, {
+              success: true,
+              contentItems: [
+                {
+                  type: "inputText",
+                  text: JSON.stringify({ ...result, imageUrl: undefined }),
+                },
+                ...(imageUrl ? [{ type: "inputImage", imageUrl }] : []),
+              ],
+            });
+          })
+          .catch((error) =>
+            this.respond(id, {
+              contentItems: [
+                {
+                  type: "inputText",
+                  text: error instanceof Error ? error.message : "Draw Mode failed.",
+                },
+              ],
+              success: false,
+            }),
+          );
+        return;
+      }
       this.respond(id, { contentItems: [], success: false });
       return;
     }
