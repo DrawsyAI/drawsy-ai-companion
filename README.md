@@ -46,7 +46,7 @@ The local path provides:
 
 The MCP is not a public HTTP service. It is launched for a local agent session, receives the session-scoped environment, and can call only authenticated loopback routes. The bridge does not expose backend code, credentials, or a public MCP endpoint.
 
-The default companion path is local-only: selected folders, agent sessions, previews, and local conversation state remain on the device. Cloud connector/resource calls are disabled unless `DRAWSY_CONNECTOR_BACKEND_URL` is explicitly configured for an integrated deployment.
+The default companion path is local-only: selected folders, agent sessions, previews, and local conversation state remain on the device. Connector/resource grants are short-lived values issued by the Drawsy backend for one turn; the companion does not persist them or ship provider credentials. Release builds route trusted local Drawsy origins to `http://127.0.0.1:3004` and trusted hosted Drawsy origins to the configured public backend. Set `DRAWSY_CONNECTOR_BACKEND_URL` to override that routing for another deployment. Unknown browser origins remain unable to use connector/resource execution.
 
 ## Scope
 
