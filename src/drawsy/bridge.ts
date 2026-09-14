@@ -22,7 +22,8 @@ import path from "node:path";
 
 import {
   CodexAppServer,
-  isCodexThreadMissingError
+  isCodexThreadMissingError,
+  isCodexThreadResumeUnsupportedError
 } from "./codex-app-server.js";
 import { OpenCodeAppServer } from "./opencode-app-server.js";
 import {
@@ -455,6 +456,60 @@ export const createDrawsyBridge = (
     for (const client of session.clients) {
       client.write(line);
     }
+  };
+
+  const attachmentReference =
+    /attachment:\/\/([A-Za-z0-9][A-Za-z0-9._-]*)(?=[)\s"'<>]|$)/g;
+
+  const generatedImageForReference = (
+    session: Session,
+    referenceId: string
+  ) => {
+    const normalizedId = referenceId.replace(
+      /\.(?:png|jpe?g|gif|webp)$/i,
+      ""
+    );
+    return session.generatedImages.find(
+      (image) => image.id === referenceId || image.id === normalizedId
+    );
+  };
+
+  const attachmentUrl = (session: Session, imageId: string) =>
+    `${bridgeUrl}/v1/sessions/${encodeURIComponent(
+      session.id
+    )}/attachments/${encodeURIComponent(imageId)}?token=${encodeURIComponent(
+      session.token
+    )}`;
+
+  const rewriteAttachmentReferences = (session: Session, text: string) =>
+    text.replace(attachmentReference, (reference, referenceId: string) => {
+      const image = generatedImageForReference(session, referenceId);
+      return image ? attachmentUrl(session, image.id) : reference;
+    });
+
+  const emitCodexEvent = (session: Session | null, event: BridgeEvent) => {
+    if (!session) return;
+    if (event.type === "assistant.delta") {
+      emit(session, {
+        ...event,
+        data: {
+          ...event.data,
+          delta: rewriteAttachmentReferences(session, event.data.delta)
+        }
+      });
+      return;
+    }
+    if (event.type === "assistant.final") {
+      emit(session, {
+        ...event,
+        data: {
+          ...event.data,
+          text: rewriteAttachmentReferences(session, event.data.text)
+        }
+      });
+      return;
+    }
+    emit(session, event);
   };
 
   const sessionContextPath = (session: Session) =>
@@ -1081,6 +1136,49 @@ export const createDrawsyBridge = (
     });
   };
 
+  const readGeneratedImageBytes = async (generated: {
+    savedPath?: string;
+    result?: string;
+  }) => {
+    let bytes: Buffer;
+    const result = generated.result?.trim();
+    if (result) {
+      let encoded = result;
+      if (result.startsWith("data:image/")) {
+        const separator = result.indexOf(",");
+        if (
+          separator < 0 ||
+          !result.slice(0, separator).endsWith(";base64")
+        ) {
+          throw new Error("The generated image payload is invalid.");
+        }
+        encoded = result.slice(separator + 1);
+      }
+      bytes = Buffer.from(encoded, "base64");
+    } else if (generated.savedPath) {
+      const details = await stat(generated.savedPath);
+      if (!details.isFile() || details.size > MAX_CANVAS_ASSET_BYTES) {
+        throw new Error(
+          `The generated image must be at most ${
+            MAX_CANVAS_ASSET_BYTES / (1024 * 1024)
+          } MiB.`
+        );
+      }
+      bytes = await readFile(generated.savedPath);
+    } else {
+      throw new Error("The generated image has no readable raster output.");
+    }
+    if (bytes.length <= 0 || bytes.length > MAX_CANVAS_ASSET_BYTES) {
+      throw new Error(
+        `The generated image must be at most ${
+          MAX_CANVAS_ASSET_BYTES / (1024 * 1024)
+        } MiB.`
+      );
+    }
+    const metadata = inspectCanvasImage(bytes);
+    return { bytes, mimeType: metadata.mimeType };
+  };
+
   const readImportableImage = async (session: Session, sourcePath: string) => {
     const normalizedSource = path.isAbsolute(sourcePath)
       ? path.resolve(sourcePath)
@@ -1094,29 +1192,7 @@ export const createDrawsyBridge = (
               path.resolve(image.savedPath) === normalizedSource
           );
     if (generated) {
-      let bytes: Buffer;
-      if (generated.result?.startsWith("data:image/")) {
-        const separator = generated.result.indexOf(",");
-        if (
-          separator < 0 ||
-          !generated.result.slice(0, separator).endsWith(";base64")
-        ) {
-          throw new Error("The generated image payload is invalid.");
-        }
-        bytes = Buffer.from(generated.result.slice(separator + 1), "base64");
-      } else if (generated.savedPath) {
-        const details = await stat(generated.savedPath);
-        if (!details.isFile() || details.size > MAX_CANVAS_ASSET_BYTES) {
-          throw new Error(
-            `The generated image must be at most ${
-              MAX_CANVAS_ASSET_BYTES / (1024 * 1024)
-            } MiB.`
-          );
-        }
-        bytes = await readFile(generated.savedPath);
-      } else {
-        throw new Error("The generated image has no readable raster output.");
-      }
+      const { bytes } = await readGeneratedImageBytes(generated);
       return {
         bytes,
         sourceName: generated.savedPath
@@ -1321,6 +1397,57 @@ export const createDrawsyBridge = (
           200,
           await executeResourceRequest(session, await readJson(request))
         );
+        return;
+      }
+
+      const attachmentMatch = url.pathname.match(
+        /^\/v1\/sessions\/([^/]+)\/attachments\/([^/]+)$/
+      );
+      if (request.method === "GET" && attachmentMatch) {
+        const session = sessions.get(decodeURIComponent(attachmentMatch[1]!));
+        const token = url.searchParams.get("token") || bearerToken(request);
+        if (!session || !safeEqual(token, session.token)) {
+          json(response, 401, {
+            error: {
+              code: "authentication_required",
+              message: "Invalid session."
+            }
+          });
+          return;
+        }
+        const origin = request.headers.origin;
+        if (origin && !allowedOrigins.has(origin)) {
+          json(response, 403, {
+            error: { code: "origin_denied", message: "Origin is not allowed." }
+          });
+          return;
+        }
+        if (origin) {
+          response.setHeader("access-control-allow-origin", origin);
+          response.setHeader("vary", "Origin");
+        }
+        const imageId = decodeURIComponent(attachmentMatch[2]!);
+        const generated = session.generatedImages.find(
+          (image) => image.id === imageId
+        );
+        if (!generated) {
+          json(response, 404, {
+            error: {
+              code: "attachment_not_found",
+              message: "The generated image is no longer available."
+            }
+          });
+          return;
+        }
+        session.touchedAt = Date.now();
+        const image = await readGeneratedImageBytes(generated);
+        response.writeHead(200, {
+          "content-type": image.mimeType,
+          "content-length": String(image.bytes.length),
+          "cache-control": "private, max-age=300",
+          "x-content-type-options": "nosniff"
+        });
+        response.end(image.bytes);
         return;
       }
 
@@ -1605,8 +1732,19 @@ export const createDrawsyBridge = (
             }
             if (matchesCurrentSurface) {
               try {
-                const messages =
-                  await existingConversationSession.agent.getConversationMessages();
+                const messages = (
+                  await existingConversationSession.agent.getConversationMessages()
+                ).map((message) =>
+                  message.role === "assistant"
+                    ? {
+                        ...message,
+                        text: rewriteAttachmentReferences(
+                          existingConversationSession,
+                          message.text
+                        )
+                      }
+                    : message
+                );
                 existingConversationSession.token =
                   randomBytes(32).toString("base64url");
                 existingConversationSession.touchedAt = Date.now();
@@ -1704,7 +1842,7 @@ export const createDrawsyBridge = (
                 CodexAppServer.start(
                   folder.path,
                   { ...agentOptions, nativeThreadId },
-                  (event) => sessionRef && emit(sessionRef, event),
+                  (event) => emitCodexEvent(sessionRef, event),
                   (image) => {
                     if (!sessionRef) return;
                     const savedPath =
@@ -1714,19 +1852,28 @@ export const createDrawsyBridge = (
                     const maxDataUrlLength =
                       Math.ceil((MAX_CANVAS_ASSET_BYTES * 4) / 3) + 64;
                     const result =
-                      image.result?.startsWith("data:image/") &&
-                      image.result.length <= maxDataUrlLength
-                        ? image.result
+                      typeof image.result === "string" &&
+                      image.result.trim().length <= maxDataUrlLength
+                        ? image.result.trim()
                         : undefined;
                     if (!savedPath && !result) return;
-                    sessionRef.generatedImages.push({
-                      id: image.id,
-                      savedPath,
-                      result,
-                      createdAt: Date.now()
-                    });
-                    if (sessionRef.generatedImages.length > 8) {
-                      sessionRef.generatedImages.shift();
+                    const existing = sessionRef.generatedImages.find(
+                      (generated) => generated.id === image.id
+                    );
+                    if (existing) {
+                      existing.savedPath ||= savedPath;
+                      existing.result ||= result;
+                      existing.createdAt = Date.now();
+                    } else {
+                      sessionRef.generatedImages.push({
+                        id: image.id,
+                        savedPath,
+                        result,
+                        createdAt: Date.now()
+                      });
+                      if (sessionRef.generatedImages.length > 8) {
+                        sessionRef.generatedImages.shift();
+                      }
                     }
                   }
                 );
@@ -1735,7 +1882,8 @@ export const createDrawsyBridge = (
               } catch (error) {
                 if (
                   !localConversation.codexThreadId ||
-                !isCodexThreadMissingError(error)
+                  (!isCodexThreadMissingError(error) &&
+                    !isCodexThreadResumeUnsupportedError(error))
                 ) {
                   throw error;
                 }
@@ -1784,7 +1932,14 @@ export const createDrawsyBridge = (
           );
           let messages;
           try {
-            messages = await agent.getConversationMessages();
+            messages = (await agent.getConversationMessages()).map((message) =>
+              message.role === "assistant"
+                ? {
+                    ...message,
+                    text: rewriteAttachmentReferences(session, message.text)
+                  }
+                : message
+            );
           } catch (error) {
             closeSession(session);
             throw error;
