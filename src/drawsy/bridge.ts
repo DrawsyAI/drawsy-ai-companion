@@ -64,6 +64,7 @@ import {
   type LivePreviewRequest,
   type DrawsySurfaceKind,
 } from "./protocol.js";
+import { createConnectorBackendResolver } from "./connector-backend.js";
 
 type FolderSelection = {
   id: string;
@@ -166,6 +167,7 @@ type Session = {
   contextCaptures: Map<string, StoredContextCapture>;
   activeConnectorTurn: AgentConnectorTurn | null;
   activeResourceTurn: AgentResourceTurn | null;
+  connectorBackendUrl: URL | null;
   engine: AgentEngine;
   agent: CodexAppServer | OpenCodeAppServer;
   previewPort: number | null;
@@ -391,6 +393,8 @@ export const createDrawsyBridge = (
     host?: string;
     allowedOrigins?: string[];
     folderPicker?: () => Promise<PickedFolder>;
+    connectorBackendUrl?: string | null;
+    version?: string;
   } = {}
 ) => {
   const port = options.port ?? Number(process.env.PORT || 3031);
@@ -399,7 +403,7 @@ export const createDrawsyBridge = (
     options.allowedOrigins ??
       (
         process.env.DRAWSY_ALLOWED_ORIGINS ||
-        "http://localhost:3001,http://127.0.0.1:3001,https://beta.drawsyai.tech"
+        "http://localhost:3001,http://127.0.0.1:3001,https://drawsyai.tech,https://beta.drawsyai.tech,https://drawsy.adarsh.rocks"
       )
         .split(",")
         .map((origin) => origin.trim())
@@ -419,25 +423,11 @@ export const createDrawsyBridge = (
   }
   const connectHost = host === "0.0.0.0" ? "127.0.0.1" : host;
   const bridgeUrl = `http://${connectHost}:${port}`;
-  const connectorBackendUrl = (() => {
-    const configured = process.env.DRAWSY_CONNECTOR_BACKEND_URL?.trim();
-    if (!configured) return null;
-    const value = new URL(configured);
-    const isLoopback = ["127.0.0.1", "::1", "localhost"].includes(
-      value.hostname
-    );
-    if (
-      (value.protocol !== "https:" &&
-        !(value.protocol === "http:" && isLoopback)) ||
-      value.username ||
-      value.password
-    ) {
-      throw new Error(
-        "DRAWSY_CONNECTOR_BACKEND_URL must be HTTPS or a loopback HTTP URL."
-      );
-    }
-    return value;
-  })();
+  const connectorBackendResolver = createConnectorBackendResolver({
+    configuredUrl: options.connectorBackendUrl
+  });
+  const version =
+    options.version || process.env.DRAWSY_COMPANION_VERSION || "0.1.0";
   const selections = new Map<string, FolderSelection>();
   const sessions = new Map<string, Session>();
   const conversationSessions = new Map<string, Session>();
@@ -674,6 +664,7 @@ export const createDrawsyBridge = (
     action: "search" | "read" | "query" | "mcp-tools" | "mcp-call",
     body: Record<string, unknown>
   ) => {
+    const connectorBackendUrl = session.connectorBackendUrl;
     if (!connectorBackendUrl) {
       throw new BridgeRequestError(
         503,
@@ -877,6 +868,7 @@ export const createDrawsyBridge = (
     session: Session,
     body: Record<string, unknown>
   ) => {
+    const connectorBackendUrl = session.connectorBackendUrl;
     if (!connectorBackendUrl) {
       throw new BridgeRequestError(
         503,
@@ -1264,7 +1256,8 @@ export const createDrawsyBridge = (
         json(response, 200, {
           ok: true,
           service: "drawsy-ai-bridge",
-          version: "0.1.0"
+          version,
+          connectorRouting: connectorBackendResolver.summary
         });
         return;
       }
@@ -1808,6 +1801,9 @@ export const createDrawsyBridge = (
           const id = randomUUID();
           const token = randomBytes(32).toString("base64url");
           const internalSecret = randomBytes(32).toString("base64url");
+          const connectorBackend = connectorBackendResolver.resolve(
+            request.headers.origin
+          );
           let sessionRef: Session | null = null;
           let agent: CodexAppServer | OpenCodeAppServer;
           try {
@@ -1917,6 +1913,7 @@ export const createDrawsyBridge = (
             contextCaptures: new Map(),
             activeConnectorTurn: null,
             activeResourceTurn: null,
+            connectorBackendUrl: connectorBackend.url,
             engine,
             agent,
             previewPort: null,
@@ -2294,6 +2291,8 @@ export const createDrawsyBridge = (
         for (const session of [...sessions.values()]) closeSession(session);
         server.close((error) => (error ? reject(error) : resolve()));
       }),
-    address: bridgeUrl
+    address: bridgeUrl,
+    connectorRouting: connectorBackendResolver.summary,
+    version
   };
 };

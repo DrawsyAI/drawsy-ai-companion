@@ -94,7 +94,8 @@ if (!gotSingleInstanceLock) {
       : undefined;
   const bridge = createDrawsyBridge({
     host: "127.0.0.1",
-    folderPicker: nativeFolderPicker
+    folderPicker: nativeFolderPicker,
+    version: app.getVersion()
   });
   let tray: Tray | null = null;
   let closing = false;
@@ -117,6 +118,14 @@ if (!gotSingleInstanceLock) {
         },
         {
           label: "Local bridge: http://127.0.0.1:3031",
+          enabled: false
+        },
+        {
+          label: `Version: ${app.getVersion()}`,
+          enabled: false
+        },
+        {
+          label: `Connectors: ${bridge.connectorRouting}`,
           enabled: false
         },
         ...(process.platform === "darwin"
@@ -206,6 +215,8 @@ if (!gotSingleInstanceLock) {
             <h1>Drawsy Companion</h1>
             <p>Local bridge is running.</p>
             <p><code>http://127.0.0.1:3031</code></p>
+            <p>Version: <code>${app.getVersion()}</code></p>
+            <p>Connectors: <code>${bridge.connectorRouting}</code></p>
             <p>Use the tray icon for engine status and quit.</p>
           </main>
         </body>
