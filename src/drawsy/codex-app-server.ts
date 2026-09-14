@@ -51,6 +51,9 @@ export const isCodexThreadMissingError = (error: unknown) =>
   isCodexInvalidRequest(error) &&
   /no rollout found for thread id/i.test(error.message);
 
+export const isCodexThreadResumeUnsupportedError = (error: unknown) =>
+  error instanceof Error && /list_turns is not supported yet/i.test(error.message);
+
 const isCodexThreadUnmaterializedError = (error: unknown) =>
   isCodexInvalidRequest(error) &&
   /is not materialized yet; includeTurns is unavailable before first user message/i.test(
@@ -345,7 +348,11 @@ const describeToolItem = (item: JsonObject): ActiveTool | null => {
       completedMessage: "Image inspected"
     };
   }
-  if (item.type === "imageGeneration") {
+  if (
+    item.type === "imageGeneration" ||
+    item.type === "Extension" ||
+    item.type === "extension"
+  ) {
     return {
       tool: "imageGeneration",
       startedMessage: "Generating an image",
@@ -381,6 +388,34 @@ const describeToolItem = (item: JsonObject): ActiveTool | null => {
     };
   }
   return null;
+};
+
+const generatedImageFromItem = (item: JsonObject) => {
+  if (
+    item.type !== "imageGeneration" &&
+    item.type !== "Extension" &&
+    item.type !== "extension"
+  ) {
+    return null;
+  }
+  if (
+    typeof item.id !== "string" ||
+    !item.id.trim() ||
+    item.status === "failed"
+  ) {
+    return null;
+  }
+  const savedPath =
+    typeof item.savedPath === "string" && item.savedPath.trim()
+      ? item.savedPath
+      : undefined;
+  const result =
+    typeof item.result === "string" && item.result.trim()
+      ? item.result
+      : undefined;
+  return savedPath || result
+    ? { id: item.id, savedPath, result }
+    : null;
 };
 
 const toolFailure = (item: JsonObject, activity: ActiveTool) => {
@@ -662,7 +697,12 @@ export class CodexAppServer {
       text: string;
     }>((turn) => {
       if (!isRecord(turn) || !Array.isArray(turn.items)) return [];
-      const user = turn.items
+      const items = turn.items.filter(isRecord);
+      for (const item of items) {
+        const generatedImage = generatedImageFromItem(item);
+        if (generatedImage) this.registerGeneratedImage(generatedImage);
+      }
+      const user = items
         .flatMap((item) => {
           if (
             !isRecord(item) ||
@@ -686,7 +726,7 @@ export class CodexAppServer {
             : [];
         })
         .at(0);
-      const assistant = turn.items
+      const assistant = items
         .flatMap((item) => {
           if (
             !isRecord(item) ||
@@ -1510,22 +1550,9 @@ export class CodexAppServer {
       });
     } else if (message.method === "item/completed" && isRecord(params.item)) {
       const item = params.item;
-      if (
-        item.type === "imageGeneration" &&
-        typeof item.id === "string" &&
-        item.status !== "failed"
-      ) {
-        const savedPath =
-          typeof item.savedPath === "string" && item.savedPath.trim()
-            ? item.savedPath
-            : undefined;
-        const result =
-          typeof item.result === "string" && item.result.trim()
-            ? item.result
-            : undefined;
-        if (savedPath || result) {
-          this.registerGeneratedImage({ id: item.id, savedPath, result });
-        }
+      const generatedImage = generatedImageFromItem(item);
+      if (generatedImage) {
+        this.registerGeneratedImage(generatedImage);
       }
       if (item.type === "agentMessage" && typeof item.text === "string") {
         this.emit({

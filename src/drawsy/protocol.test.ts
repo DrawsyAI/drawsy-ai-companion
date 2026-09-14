@@ -364,6 +364,9 @@ test("bridge keeps Codex controls inside the selected-folder boundary", async ()
       "base64"
     )
   );
+  const generatedImageBase64 = (await readFile(generatedImage)).toString(
+    "base64"
+  );
   const canonicalFolder = await realpath(selectedFolder);
   await writeFile(
     fakeCodexScript,
@@ -435,6 +438,10 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     send({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "imageGeneration", id: "image-1", status: "completed", result: "", savedPath: ${JSON.stringify(
       generatedImage
     )} } } });
+    send({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "Extension", id: "extension-image-1", status: "completed", result: ${JSON.stringify(
+      generatedImageBase64
+    )} } } });
+    send({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "agentMessage", id: "image-message-1", text: "![A charming storybook house](attachment://extension-image-1.png)" } } });
     send({ method: "warning", params: { threadId: "thread-1", message: "Test warning" } });
     send({ method: "item/agentMessage/delta", params: { delta: "Ready", itemId: "message-1", threadId: "thread-1", turnId: "turn-1" } });
     send({ id: "server-time", method: "currentTime/read", params: {} });
@@ -777,6 +784,26 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     assert.match(turnEvents, /"status":"warning"/);
     assert.match(turnEvents, /"status":"inProgress"/);
     assert.match(turnEvents, /"status":"completed"/);
+    const finalImageEvent = turnEvents
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+      .find(
+        (event) =>
+          event.type === "assistant.final" &&
+          event.data?.itemId === "image-message-1"
+      );
+    assert.ok(finalImageEvent);
+    const imageUrl = finalImageEvent.data.text.match(/\]\(([^)]+)\)/)?.[1];
+    assert.ok(imageUrl);
+    assert.match(imageUrl, /\/v1\/sessions\/[^/]+\/attachments\/extension-image-1\?/);
+    const attachmentResponse = await fetch(imageUrl);
+    assert.equal(attachmentResponse.status, 200);
+    assert.equal(attachmentResponse.headers.get("content-type"), "image/png");
+    assert.deepEqual(
+      Buffer.from(await attachmentResponse.arrayBuffer()),
+      Buffer.from(generatedImageBase64, "base64")
+    );
     assert.ok(
       turnEvents.indexOf('"tool":"reasoning"') <
         turnEvents.indexOf('"tool":"commandExecution"')
