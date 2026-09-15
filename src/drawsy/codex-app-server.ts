@@ -56,9 +56,18 @@ export const isCodexThreadResumeUnsupportedError = (error: unknown) =>
 
 const isCodexThreadUnmaterializedError = (error: unknown) =>
   isCodexInvalidRequest(error) &&
-  /is not materialized yet; includeTurns is unavailable before first user message/i.test(
+  /is not materialized yet; (?:includeTurns|thread\/(?:turns|items)\/list) is unavailable before first user message/i.test(
     error.message
   );
+
+const isCodexHistoryListUnsupportedError = (error: unknown) =>
+  error instanceof Error &&
+  ((error instanceof CodexRpcError && error.code === -32601) ||
+    /full-history hydration is deprecated for paginated threads|paginated threads require thread\/(?:turns|items)\/list|(?:thread\/(?:turns|items)\/list|list_turns).*not supported/i.test(
+      error.message
+    ));
+
+const HISTORY_PAGE_LIMIT = 100;
 
 type PendingRequest = {
   resolve: (value: unknown) => void;
@@ -676,22 +685,69 @@ export class CodexAppServer {
     return this.threadId;
   }
 
-  async getConversationMessages(): Promise<
-    Array<{ id: string; role: "user" | "assistant"; text: string }>
-  > {
-    if (!this.threadId) return [];
-    let response: JsonObject;
-    try {
-      response = (await this.request("thread/read", {
-        threadId: this.threadId,
-        includeTurns: true
+  private async listHistoryPages(
+    method: "thread/turns/list" | "thread/items/list",
+    params: JsonObject
+  ) {
+    let cursor: string | null = null;
+    const entries: JsonObject[] = [];
+    while (true) {
+      const response = (await this.request(method, {
+        ...params,
+        cursor,
+        limit: HISTORY_PAGE_LIMIT,
+        sortDirection: "asc"
       })) as JsonObject;
-    } catch (error) {
-      if (isCodexThreadUnmaterializedError(error)) return [];
-      throw error;
+      const data = Array.isArray(response.data) ? response.data : [];
+      entries.push(...data.filter(isRecord));
+      const nextCursor =
+        typeof response.nextCursor === "string" && response.nextCursor
+          ? response.nextCursor
+          : null;
+      if (!nextCursor) return entries;
+      if (nextCursor === cursor) {
+        throw new Error(`Codex returned a repeated history cursor for ${method}.`);
+      }
+      cursor = nextCursor;
     }
+  }
+
+  private async getPaginatedConversationTurns(): Promise<JsonObject[]> {
+    const threadId = this.threadId;
+    if (!threadId) return [];
+    const turns = await this.listHistoryPages("thread/turns/list", {
+      threadId,
+      itemsView: "notLoaded"
+    });
+    const hydratedTurns: JsonObject[] = [];
+    for (const turn of turns) {
+      if (typeof turn.id !== "string") continue;
+      const itemEntries = await this.listHistoryPages("thread/items/list", {
+        threadId,
+        turnId: turn.id
+      });
+      hydratedTurns.push({
+        ...turn,
+        items: itemEntries.flatMap((entry) =>
+          isRecord(entry.item) ? [entry.item] : []
+        )
+      });
+    }
+    return hydratedTurns;
+  }
+
+  private async getLegacyConversationTurns(): Promise<JsonObject[]> {
+    const threadId = this.threadId;
+    if (!threadId) return [];
+    const response = (await this.request("thread/read", {
+      threadId,
+      includeTurns: true
+    })) as JsonObject;
     const thread = isRecord(response.thread) ? response.thread : {};
-    const turns = Array.isArray(thread.turns) ? thread.turns : [];
+    return Array.isArray(thread.turns) ? thread.turns.filter(isRecord) : [];
+  }
+
+  private conversationMessagesFromTurns(turns: JsonObject[]) {
     return turns.flatMap<{
       id: string;
       role: "user" | "assistant";
@@ -745,6 +801,30 @@ export class CodexAppServer {
         message ? [message] : []
       );
     });
+  }
+
+  async getConversationMessages(): Promise<
+    Array<{ id: string; role: "user" | "assistant"; text: string }>
+  > {
+    if (!this.threadId) return [];
+    let turns: JsonObject[];
+    try {
+      turns = await this.getPaginatedConversationTurns();
+    } catch (error) {
+      if (isCodexThreadUnmaterializedError(error)) return [];
+      if (!isCodexHistoryListUnsupportedError(error)) throw error;
+      try {
+        turns = await this.getLegacyConversationTurns();
+      } catch (legacyError) {
+        if (isCodexThreadUnmaterializedError(legacyError)) return [];
+        if (!isCodexHistoryListUnsupportedError(legacyError)) throw legacyError;
+        console.warn(
+          "Codex conversation history is unavailable in this runtime; continuing without restored messages."
+        );
+        return [];
+      }
+    }
+    return this.conversationMessagesFromTurns(turns);
   }
 
   private async initialize() {
@@ -859,11 +939,7 @@ export class CodexAppServer {
         ? {
             ...threadInput,
             threadId: options.nativeThreadId,
-            initialTurnsPage: {
-              limit: 100,
-              sortDirection: "asc",
-              itemsView: "full"
-            }
+            excludeTurns: true
           }
         : { ...threadInput, ephemeral: false }
     )) as JsonObject;
