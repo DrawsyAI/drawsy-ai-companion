@@ -191,6 +191,7 @@ const acquireLoopbackPort = () =>
 const createSandboxProfile = (input: {
   folderPath: string;
   runtimePath: string;
+  executablePath: string;
   accessMode: AgentAccessMode;
   internetEnabled: boolean;
 }) => {
@@ -208,6 +209,7 @@ const createSandboxProfile = (input: {
   const readablePaths = [
     input.folderPath,
     input.runtimePath,
+    input.executablePath,
     drawsyRuntimePath,
     drawsyPackagePath
   ];
@@ -251,6 +253,49 @@ ${readablePaths
   .join("\n")}
 (allow file-write* ${writablePaths.join(" ")})
 ${network}`;
+};
+
+const linuxHiddenRoots = [
+  "/home",
+  "/root",
+  "/tmp",
+  "/var/tmp",
+  "/app/workspace",
+  "/app/session-workspaces",
+  "/app/codex-runtime"
+];
+
+const linuxExecutableMountArguments = (
+  executable: string,
+  existingDirectories: string[]
+) => {
+  const resolvedExecutable = path.resolve(executable);
+  const hiddenRoot = linuxHiddenRoots.find(
+    (root) =>
+      resolvedExecutable === root || resolvedExecutable.startsWith(`${root}/`)
+  );
+  if (!hiddenRoot) return [];
+
+  const existingDirectorySet = new Set(
+    existingDirectories.map((directory) => path.resolve(directory))
+  );
+  const parentDirectories: string[] = [];
+  let current = path.dirname(resolvedExecutable);
+  while (current !== hiddenRoot && !existingDirectorySet.has(current)) {
+    parentDirectories.unshift(current);
+    const parent = path.dirname(current);
+    if (parent === current || !parent.startsWith(`${hiddenRoot}/`)) {
+      return [];
+    }
+    current = parent;
+  }
+
+  return [
+    ...parentDirectories.flatMap((directory) => ["--dir", directory]),
+    "--ro-bind",
+    resolvedExecutable,
+    resolvedExecutable
+  ];
 };
 
 const runtimeEnvironment = (runtimePath: string, previewPort: number | null) => {
@@ -315,6 +360,12 @@ const createLinuxSandboxArguments = (input: {
     "/app/session-workspaces",
     "--tmpfs",
     "/app/codex-runtime",
+    ...linuxExecutableMountArguments(input.executable, [
+      folderParent,
+      input.folderPath,
+      runtimeParent,
+      input.runtimePath
+    ]),
     "--dir",
     folderParent,
     "--dir",
@@ -456,12 +507,13 @@ export class OpenCodeAppServer {
     );
 
     const port = await acquireLoopbackPort();
-    const openCodeBinary = resolveOpenCodeBinary();
-    if (!openCodeBinary) {
+    const resolvedOpenCodeBinary = resolveOpenCodeBinary();
+    if (!resolvedOpenCodeBinary) {
       throw new Error(
         "OpenCode was not found. Install or launch OpenCode on this device, then refresh the Companion engine status."
       );
     }
+    const openCodeBinary = await realpath(resolvedOpenCodeBinary);
     const environment = runtimeEnvironment(
       this.runtimePath,
       this.session.previewPort
@@ -474,6 +526,7 @@ export class OpenCodeAppServer {
           createSandboxProfile({
             folderPath: this.folderPath,
             runtimePath: this.runtimePath,
+            executablePath: openCodeBinary,
             accessMode: this.accessMode,
             internetEnabled: this.internetEnabled
           }),
@@ -969,6 +1022,47 @@ export class OpenCodeAppServer {
       this.turnActive = false;
       throw error;
     }
+  }
+
+  async interruptTurn() {
+    if (!this.openCodeSessionId || !this.turnActive) {
+      throw new Error("No OpenCode turn is running.");
+    }
+    await this.request<boolean>(
+      `/session/${encodeURIComponent(this.openCodeSessionId)}/abort`,
+      { method: "POST" }
+    );
+  }
+
+  async steerTurn(message: string) {
+    if (!this.openCodeSessionId || !this.currentModel) {
+      throw new Error("OpenCode is not ready.");
+    }
+    if (!this.turnActive) {
+      throw new Error("No OpenCode turn is running.");
+    }
+    await this.request<void>(
+      `/session/${encodeURIComponent(this.openCodeSessionId)}/prompt_async`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          model: {
+            providerID: this.currentModel.providerId,
+            modelID: this.currentModel.modelId
+          },
+          ...(this.agentMetadata?.reasoningEffort &&
+          this.agentMetadata.reasoningEffort !== "default"
+            ? { variant: this.agentMetadata.reasoningEffort }
+            : {}),
+          system: getDeveloperInstructions(
+            this.session.surfaceKind,
+            this.session.previewPort
+          ),
+          parts: [{ type: "text", text: message }],
+          delivery: "steer"
+        })
+      }
+    );
   }
 
   async getControls(): Promise<AgentControls> {

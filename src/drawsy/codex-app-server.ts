@@ -520,6 +520,7 @@ export class CodexAppServer {
   private nextId = 1;
   private threadId: string | null = null;
   private turnActive = false;
+  private activeTurnId: string | null = null;
   private agentMetadata: AgentMetadata | null = null;
   private accessMode: AgentAccessMode = "workspace";
   private internetEnabled = true;
@@ -966,8 +967,9 @@ export class CodexAppServer {
       }
     }
     this.turnActive = true;
+    this.activeTurnId = null;
     try {
-      await this.request("turn/start", {
+      const result = (await this.request("turn/start", {
         threadId: this.threadId,
         cwd: this.folderPath,
         sandboxPolicy: this.sandboxPolicy(),
@@ -1036,11 +1038,36 @@ export class CodexAppServer {
         ],
         personality: "pragmatic",
         summary: "concise"
-      });
+      })) as JsonObject;
+      const turn = isRecord(result.turn) ? result.turn : {};
+      const turnId = typeof turn.id === "string" ? turn.id : undefined;
+      if (turnId) this.activeTurnId = turnId;
     } catch (error) {
       this.turnActive = false;
+      this.activeTurnId = null;
       throw error;
     }
+  }
+
+  async interruptTurn() {
+    if (!this.threadId || !this.turnActive || !this.activeTurnId) {
+      throw new Error("No Codex turn is running.");
+    }
+    await this.request("turn/interrupt", {
+      threadId: this.threadId,
+      turnId: this.activeTurnId
+    });
+  }
+
+  async steerTurn(message: string) {
+    if (!this.threadId || !this.turnActive || !this.activeTurnId) {
+      throw new Error("No Codex turn is running.");
+    }
+    await this.request("turn/steer", {
+      threadId: this.threadId,
+      expectedTurnId: this.activeTurnId,
+      input: [{ type: "text", text: message, text_elements: [] }]
+    });
   }
 
   async getControls(): Promise<AgentControls> {
@@ -1425,7 +1452,13 @@ export class CodexAppServer {
         this.rejectDrawsyMcp(new Error("Drawsy MCP failed to start."));
       }
     } else if (message.method === "turn/started") {
-      this.emit({ type: "turn.status", data: { status: "inProgress" } });
+      const turn = isRecord(params.turn) ? params.turn : {};
+      const turnId = typeof turn.id === "string" ? turn.id : undefined;
+      if (turnId) this.activeTurnId = turnId;
+      this.emit({
+        type: "turn.status",
+        data: { status: "inProgress" }
+      });
     } else if (message.method === "item/started" && isRecord(params.item)) {
       const item = params.item;
       const activity = describeToolItem(item);
@@ -1591,6 +1624,7 @@ export class CodexAppServer {
       }
     } else if (message.method === "turn/completed" && isRecord(params.turn)) {
       this.turnActive = false;
+      this.activeTurnId = null;
       const error =
         isRecord(params.turn.error) &&
         typeof params.turn.error.message === "string"

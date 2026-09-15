@@ -419,6 +419,11 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
   if (message.method === "thread/unsubscribe") send({ id: message.id, result: { status: "unsubscribed" } });
   if (message.method === "turn/start") {
     materialized = true;
+    if (message.params.input.at(-1)?.text === "hold") {
+      send({ id: message.id, result: { turn: { id: "turn-hold" } } });
+      send({ method: "turn/started", params: { threadId: "thread-1", turn: { id: "turn-hold", status: "inProgress" } } });
+      return;
+    }
     send({ id: message.id, result: { turn: { id: "turn-1" } } });
     send({ method: "turn/started", params: { threadId: "thread-1", turn: { id: "turn-1", status: "inProgress" } } });
     send({ method: "item/started", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "reasoning", id: "reasoning-1", summary: [], content: [] } } });
@@ -445,6 +450,14 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     send({ method: "warning", params: { threadId: "thread-1", message: "Test warning" } });
     send({ method: "item/agentMessage/delta", params: { delta: "Ready", itemId: "message-1", threadId: "thread-1", turnId: "turn-1" } });
     send({ id: "server-time", method: "currentTime/read", params: {} });
+  }
+  if (message.method === "turn/steer") {
+    send({ id: message.id, result: { turnId: "turn-hold" } });
+    send({ method: "turn/completed", params: { turn: { id: "turn-hold", status: "completed" } } });
+  }
+  if (message.method === "turn/interrupt") {
+    send({ id: message.id, result: {} });
+    send({ method: "turn/completed", params: { turn: { id: "turn-hold", status: "interrupted" } } });
   }
   if (message.id === "server-time" && message.result) {
     send({ method: "turn/completed", params: { turn: { status: "completed" } } });
@@ -813,6 +826,55 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         turnEvents.indexOf('"tool":"read_current_canvas"')
     );
 
+    const heldTurnResponse = await fetch(
+      `${bridge.address}/v1/sessions/${session.id}/turns`,
+      {
+        method: "POST",
+        headers: { ...headers, authorization: `Bearer ${session.token}` },
+        body: JSON.stringify({ message: "hold" })
+      }
+    );
+    assert.equal(heldTurnResponse.status, 202);
+    const steerResponse = await fetch(
+      `${bridge.address}/v1/sessions/${session.id}/turns/steer`,
+      {
+        method: "POST",
+        headers: { ...headers, authorization: `Bearer ${session.token}` },
+        body: JSON.stringify({ message: "Keep the answer concise." })
+      }
+    );
+    assert.equal(steerResponse.status, 202);
+    let steerEvents = "";
+    while (!steerEvents.includes('"status":"completed"')) {
+      const event = await reader.read();
+      assert.equal(event.done, false);
+      steerEvents += new TextDecoder().decode(event.value);
+    }
+
+    const secondHeldTurnResponse = await fetch(
+      `${bridge.address}/v1/sessions/${session.id}/turns`,
+      {
+        method: "POST",
+        headers: { ...headers, authorization: `Bearer ${session.token}` },
+        body: JSON.stringify({ message: "hold" })
+      }
+    );
+    assert.equal(secondHeldTurnResponse.status, 202);
+    const interruptResponse = await fetch(
+      `${bridge.address}/v1/sessions/${session.id}/turns/interrupt`,
+      {
+        method: "POST",
+        headers: { ...headers, authorization: `Bearer ${session.token}` }
+      }
+    );
+    assert.equal(interruptResponse.status, 202);
+    let interruptEvents = "";
+    while (!interruptEvents.includes('"status":"interrupted"')) {
+      const event = await reader.read();
+      assert.equal(event.done, false);
+      interruptEvents += new TextDecoder().decode(event.value);
+    }
+
     const log = (await readFile(requestLog, "utf8"))
       .trim()
       .split("\n")
@@ -982,6 +1044,25 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     assert.deepEqual(settings.params.sandboxPolicy, turn.params.sandboxPolicy);
     const timeResponse = log.find((message) => message.id === "server-time");
     assert.equal(typeof timeResponse.result.currentTimeAt, "number");
+    const steerRequest = log.find((message) => message.method === "turn/steer");
+    assert.deepEqual(steerRequest.params, {
+      threadId: "thread-1",
+      expectedTurnId: "turn-hold",
+      input: [
+        {
+          type: "text",
+          text: "Keep the answer concise.",
+          text_elements: []
+        }
+      ]
+    });
+    const interruptRequest = log.find(
+      (message) => message.method === "turn/interrupt"
+    );
+    assert.deepEqual(interruptRequest.params, {
+      threadId: "thread-1",
+      turnId: "turn-hold"
+    });
 
     const internalSecret =
       thread.params.config.mcp_servers.drawsy.env.DRAWSY_SESSION_SECRET;

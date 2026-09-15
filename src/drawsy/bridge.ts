@@ -2039,10 +2039,53 @@ export const createDrawsyBridge = (
                 )
               );
           }
+          json(response, 202, { accepted: true });
         } catch (error) {
           session.activeConnectorTurn = null;
           session.activeResourceTurn = null;
           throw error;
+        }
+        return;
+      }
+
+      const turnActionMatch = url.pathname.match(
+        /^\/v1\/sessions\/([^/]+)\/turns\/(interrupt|steer)$/
+      );
+      if (request.method === "POST" && turnActionMatch) {
+        const session = publicSession(
+          request,
+          response,
+          decodeURIComponent(turnActionMatch[1]!)
+        );
+        if (!session) return;
+        const action = turnActionMatch[2];
+        if (action === "interrupt") {
+          await session.agent.interruptTurn();
+          json(response, 202, { accepted: true });
+          return;
+        }
+        const body = await readJson(request);
+        const message =
+          typeof body.message === "string" ? body.message.trim() : "";
+        if (!message || message.length > 20_000) {
+          json(response, 400, {
+            error: {
+              code: "invalid_message",
+              message: "Message is empty or too long."
+            }
+          });
+          return;
+        }
+        await session.agent.steerTurn(message);
+        if (session.conversationId) {
+          await localConversations
+            .recordUserMessage(session.conversationId, message)
+            .catch((error) =>
+              console.warn(
+                "Drawsy local conversation title could not be saved.",
+                error
+              )
+            );
         }
         json(response, 202, { accepted: true });
         return;
