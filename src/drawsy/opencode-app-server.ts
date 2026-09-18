@@ -37,6 +37,7 @@ type OpenCodeSessionConfig = {
   surfaceKind: DrawsySurfaceKind;
   surfaceId: string | null;
   surfaceName: string;
+  workspaceMode: "selected" | "private";
   isolateProcessGroup: boolean;
   previewPort: number | null;
   runtimePath: string;
@@ -968,7 +969,7 @@ export class OpenCodeAppServer {
           .map((skill) => `${skill.name} (${skill.path})`)
           .join(
             ", "
-          )}. Use them when relevant; never access a path outside the selected folder.`
+          )}. Use them when relevant; never access a path outside the current Drawsy workspace.`
       });
     }
     if (connectors.length) {
@@ -1012,7 +1013,8 @@ export class OpenCodeAppServer {
               : {}),
             system: getDeveloperInstructions(
               this.session.surfaceKind,
-              this.session.previewPort
+              this.session.previewPort,
+              this.session.workspaceMode
             ),
             parts
           })
@@ -1056,7 +1058,8 @@ export class OpenCodeAppServer {
             : {}),
           system: getDeveloperInstructions(
             this.session.surfaceKind,
-            this.session.previewPort
+            this.session.previewPort,
+            this.session.workspaceMode
           ),
           parts: [{ type: "text", text: message }],
           delivery: "steer"

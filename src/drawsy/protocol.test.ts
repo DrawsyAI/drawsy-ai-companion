@@ -618,12 +618,100 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     assert.equal(session.resumed, false);
     assert.deepEqual(session.messages, []);
 
+    const privateCanvasResponse = await fetch(`${bridge.address}/v1/sessions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        canvasId: "canvas-without-folder",
+        canvasName: "Canvas without folder",
+        surfaceKind: "canvas",
+        conversationId: "d2f0fdc4-49a6-44b4-bd15-58dd5b9b8a03"
+      })
+    });
+    assert.equal(privateCanvasResponse.status, 201);
+    const privateCanvas = (await privateCanvasResponse.json()) as {
+      id: string;
+      token: string;
+      folderName: string | null;
+      folder: { selectionId: string; name: string } | null;
+    };
+    assert.equal(privateCanvas.folderName, null);
+    assert.equal(privateCanvas.folder, null);
+    const closePrivateCanvasResponse = await fetch(
+      `${bridge.address}/v1/sessions/${privateCanvas.id}`,
+      {
+        method: "DELETE",
+        headers: {
+          origin,
+          authorization: `Bearer ${privateCanvas.token}`
+        }
+      }
+    );
+    assert.equal(closePrivateCanvasResponse.status, 204);
+
+    const neutralWithoutFolderResponse = await fetch(
+      `${bridge.address}/v1/sessions`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          surfaceKind: "neutral",
+          surfaceName: "Connectors",
+          conversationId: "3be54c0f-d4f5-4d08-bd5e-6fdb6a042213"
+        })
+      }
+    );
+    assert.equal(neutralWithoutFolderResponse.status, 400);
+    assert.equal(
+      (await neutralWithoutFolderResponse.json()).error.code,
+      "folder_required"
+    );
+
+    const rememberedFolderResponse = await fetch(
+      `${bridge.address}/v1/sessions`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          canvasId: "canvas-1",
+          canvasName: "Canvas 1",
+          surfaceKind: "presentation",
+          conversationId: "6a7460e7-f18e-4d34-9b1b-1eeceaf5c76f"
+        })
+      }
+    );
+    assert.equal(rememberedFolderResponse.status, 201);
+    const rememberedFolder = (await rememberedFolderResponse.json()) as {
+      id: string;
+      token: string;
+      folderName: string | null;
+      folder: { selectionId: string; name: string } | null;
+    };
+    assert.equal(rememberedFolder.folderName, "workspace");
+    assert.equal(rememberedFolder.folder?.name, "workspace");
+    const closeRememberedFolderResponse = await fetch(
+      `${bridge.address}/v1/sessions/${rememberedFolder.id}`,
+      {
+        method: "DELETE",
+        headers: {
+          origin,
+          authorization: `Bearer ${rememberedFolder.token}`
+        }
+      }
+    );
+    assert.equal(closeRememberedFolderResponse.status, 204);
+
     const historyResponse = await fetch(
       `${bridge.address}/v1/conversations?scope=canvas&canvasId=canvas-1`,
       { headers: { origin } }
     );
     assert.equal(historyResponse.status, 200);
-    assert.deepEqual((await historyResponse.json()).conversations.map((item: { id: string }) => item.id), [conversationId]);
+    assert.deepEqual(
+      (await historyResponse.json()).conversations.map(
+        (item: { id: string }) => item.id
+      ),
+      ["6a7460e7-f18e-4d34-9b1b-1eeceaf5c76f", conversationId]
+    );
 
     const resumedSession = await fetch(`${bridge.address}/v1/sessions`, {
       method: "POST",
@@ -982,7 +1070,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     );
     const threads = log.filter((message) => message.method === "thread/start");
     const resumes = log.filter((message) => message.method === "thread/resume");
-    assert.equal(threads.length, 1);
+    assert.equal(threads.length, 3);
     assert.equal(threads[0].params.config.features.network_proxy, false);
     assert.equal(resumes[0].params.threadId, "thread-1");
     assert.equal(resumes[0].params.excludeTurns, true);

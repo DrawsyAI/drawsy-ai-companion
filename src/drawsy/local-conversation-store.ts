@@ -31,6 +31,7 @@ export type LocalConversation = {
   createdAt: number;
   updatedAt: number;
   messageCount: number;
+  workspacePath: string | null;
   codexThreadId: string | null;
   openCodeSessionId: string | null;
 };
@@ -39,6 +40,7 @@ type StoreData = {
   version: 1;
   preferences: LocalConversationPreferences;
   conversations: LocalConversation[];
+  rememberedFolders: Record<string, string>;
 };
 
 const emptyPreference = (): LocalAgentPreference => ({
@@ -59,7 +61,8 @@ export const defaultConversationPreferences = (): LocalConversationPreferences =
 const initialStore = (): StoreData => ({
   version: 1,
   preferences: defaultConversationPreferences(),
-  conversations: []
+  conversations: [],
+  rememberedFolders: {}
 });
 
 const localStateDirectory = () => {
@@ -113,6 +116,8 @@ const readConversation = (value: unknown): LocalConversation | null => {
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     messageCount: Math.max(0, Math.floor(record.messageCount)),
+    workspacePath:
+      typeof record.workspacePath === "string" ? record.workspacePath : null,
     codexThreadId: typeof record.codexThreadId === "string" ? record.codexThreadId : null,
     openCodeSessionId: typeof record.openCodeSessionId === "string" ? record.openCodeSessionId : null
   };
@@ -146,7 +151,24 @@ export class LocalConversationStore {
       const conversations = Array.isArray(record.conversations)
         ? record.conversations.map(readConversation).filter((item): item is LocalConversation => !!item)
         : [];
-      this.data = { version: 1, preferences, conversations };
+      const rememberedFoldersRecord =
+        record.rememberedFolders && typeof record.rememberedFolders === "object"
+          ? record.rememberedFolders as Record<string, unknown>
+          : {};
+      const rememberedFolders = Object.fromEntries(
+        Object.entries(rememberedFoldersRecord)
+          .filter(
+            ([key, value]) =>
+              key.length > 0 &&
+              key.length <= 512 &&
+              typeof value === "string" &&
+              value.length > 0 &&
+              value.length <= 4096
+          )
+          .slice(-100)
+          .map(([key, value]) => [key, value as string])
+      );
+      this.data = { version: 1, preferences, conversations, rememberedFolders };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         const backupPath = `${this.statePath}.corrupt-${Date.now()}`;
@@ -205,6 +227,8 @@ export class LocalConversationStore {
   async upsert(input: Omit<LocalConversation, "codexThreadId" | "openCodeSessionId">) {
     return this.mutate(() => {
       const existing = this.data.conversations.find((item) => item.id === input.id);
+      const workspaceChanged =
+        !!existing && existing.workspacePath !== input.workspacePath;
       const conversation: LocalConversation = existing
         ? {
             ...existing,
@@ -212,6 +236,8 @@ export class LocalConversationStore {
             createdAt: existing.createdAt,
             title: existing.title === "New conversation" ? input.title : existing.title,
             messageCount: Math.max(existing.messageCount, input.messageCount),
+            codexThreadId: workspaceChanged ? null : existing.codexThreadId,
+            openCodeSessionId: workspaceChanged ? null : existing.openCodeSessionId,
             updatedAt: Math.max(existing.updatedAt, input.updatedAt)
           }
         : { ...input, codexThreadId: null, openCodeSessionId: null };
@@ -219,6 +245,27 @@ export class LocalConversationStore {
       if (index >= 0) this.data.conversations[index] = conversation;
       else this.data.conversations.push(conversation);
       return { ...conversation };
+    });
+  }
+
+  async getRememberedFolder(key: string) {
+    await this.loaded;
+    return this.data.rememberedFolders[key] || null;
+  }
+
+  async rememberFolder(key: string, folderPath: string) {
+    return this.mutate(() => {
+      if (!(key in this.data.rememberedFolders) && Object.keys(this.data.rememberedFolders).length >= 100) {
+        const oldestKey = Object.keys(this.data.rememberedFolders)[0];
+        if (oldestKey) delete this.data.rememberedFolders[oldestKey];
+      }
+      this.data.rememberedFolders[key] = folderPath;
+    });
+  }
+
+  async forgetRememberedFolder(key: string) {
+    return this.mutate(() => {
+      delete this.data.rememberedFolders[key];
     });
   }
 

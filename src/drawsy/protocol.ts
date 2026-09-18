@@ -229,7 +229,7 @@ export type AgentResourceTurn = {
 export type BridgeEvent =
   | {
       type: "session.ready";
-      data: { folderName: string; agent: AgentMetadata };
+      data: { folderName: string | null; agent: AgentMetadata };
     }
   | { type: "assistant.delta"; data: { delta: string; itemId: string } }
   | { type: "assistant.final"; data: { text: string; itemId: string } }

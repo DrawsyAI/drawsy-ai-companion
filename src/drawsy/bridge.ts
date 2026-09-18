@@ -30,7 +30,11 @@ import {
   LocalConversationStore,
   type LocalConversationPreferences
 } from "./local-conversation-store.js";
-import { pickFolder, type PickedFolder } from "./folder-picker.js";
+import {
+  normalizeFolder,
+  pickFolder,
+  type PickedFolder
+} from "./folder-picker.js";
 import { readLocalEngineStatus } from "./engine-status.js";
 import {
   createCanvasImageAsset,
@@ -71,6 +75,8 @@ type FolderSelection = {
   path: string;
   name: string;
   expiresAt: number;
+  userSelected: boolean;
+  privateWorkspace: boolean;
 };
 
 const MAX_DRAW_DOCUMENT_BYTES = 512 * 1024;
@@ -544,6 +550,76 @@ export const createDrawsyBridge = (
       client.end();
     }
     void rm(sessionContextPath(session), { recursive: true, force: true });
+  };
+
+  const folderNameForClient = (folder: FolderSelection) =>
+    folder.userSelected ? folder.name : null;
+
+  const folderForClient = (folder: FolderSelection) =>
+    folder.userSelected
+      ? { selectionId: folder.id, name: folder.name }
+      : null;
+
+  const resolveSessionFolder = async (input: {
+    selectionId: string;
+    conversationId: string;
+    canvasId: string;
+    surfaceKind: DrawsySurfaceKind;
+  }): Promise<FolderSelection> => {
+    if (input.selectionId) {
+      const selected = selections.get(input.selectionId);
+      if (!selected || selected.expiresAt <= Date.now()) {
+        selections.delete(input.selectionId);
+        throw new BridgeRequestError(
+          400,
+          "folder_expired",
+          "Choose the folder again."
+        );
+      }
+      return selected;
+    }
+
+    if (input.surfaceKind !== "canvas" && input.surfaceKind !== "presentation") {
+      throw new BridgeRequestError(
+        400,
+        "folder_required",
+        "Choose a folder for this Drawsy surface."
+      );
+    }
+
+    const memoryKey = input.canvasId;
+    const rememberedPath = await localConversations.getRememberedFolder(memoryKey);
+    if (rememberedPath) {
+      try {
+        const remembered = await normalizeFolder(rememberedPath);
+        const selection: FolderSelection = {
+          id: randomUUID(),
+          ...remembered,
+          expiresAt: Date.now() + 60 * 60 * 1000,
+          userSelected: true,
+          privateWorkspace: false
+        };
+        selections.set(selection.id, selection);
+        return selection;
+      } catch {
+        await localConversations.forgetRememberedFolder(memoryKey);
+      }
+    }
+
+    const workspacePath = path.join(
+      localConversations.stateDirectory,
+      "session-workspaces",
+      input.conversationId
+    );
+    await mkdir(workspacePath, { recursive: true });
+    return {
+      id: randomUUID(),
+      path: workspacePath,
+      name: "Private session workspace",
+      expiresAt: Number.POSITIVE_INFINITY,
+      userSelected: false,
+      privateWorkspace: true
+    };
   };
 
   const requirePublicOrigin = (
@@ -1519,7 +1595,9 @@ export const createDrawsyBridge = (
         const selection: FolderSelection = {
           id: randomUUID(),
           ...folder,
-          expiresAt: Date.now() + 60 * 60 * 1000
+          expiresAt: Date.now() + 60 * 60 * 1000,
+          userSelected: true,
+          privateWorkspace: false
         };
         selections.set(selection.id, selection);
         json(response, 200, {
@@ -1628,6 +1706,18 @@ export const createDrawsyBridge = (
           });
           return;
         }
+        if (
+          surfaceId &&
+          (surfaceId.length > 128 || !/^[A-Za-z0-9:_-]+$/.test(surfaceId))
+        ) {
+          json(response, 400, {
+            error: {
+              code: "surface_invalid",
+              message: "The Drawsy surface id is invalid."
+            }
+          });
+          return;
+        }
         const previousStart = conversationStartLocks.get(conversationId);
         let releaseStart!: () => void;
         const currentStart = new Promise<void>((resolve) => {
@@ -1639,6 +1729,33 @@ export const createDrawsyBridge = (
         conversationStartLocks.set(conversationId, startTail);
         if (previousStart) await previousStart;
         try {
+          let folder: FolderSelection;
+          try {
+            folder = await resolveSessionFolder({
+              selectionId,
+              conversationId,
+              canvasId,
+              surfaceKind: validatedSurfaceKind
+            });
+          } catch (error) {
+            const activeSession = conversationSessions.get(conversationId);
+            const sameSurface =
+              !!activeSession &&
+              activeSession.engine === engine &&
+              activeSession.canvasId === (canvasId || null) &&
+              activeSession.surfaceKind === validatedSurfaceKind &&
+              activeSession.surfaceId === surfaceId;
+            if (
+              !sameSurface ||
+              (validatedSurfaceKind !== "canvas" &&
+                validatedSurfaceKind !== "presentation")
+            ) {
+              throw error;
+            }
+            // An already-open canvas/presentation session is authoritative. A
+            // stale picker token is not needed to reconnect to that session.
+            folder = activeSession.folder;
+          }
           const scope = canvasId ? "canvas" : "general";
           const existingConversation = await localConversations.get(
             conversationId
@@ -1667,7 +1784,8 @@ export const createDrawsyBridge = (
             title: "New conversation",
             createdAt: existingConversation?.createdAt || Date.now(),
             updatedAt: existingConversation?.updatedAt || Date.now(),
-            messageCount: existingConversation?.messageCount || 0
+            messageCount: existingConversation?.messageCount || 0,
+            workspacePath: folder.path
           });
           let hadNativeSession = Boolean(
             engine === "codex"
@@ -1723,7 +1841,10 @@ export const createDrawsyBridge = (
               });
               return;
             }
-            if (matchesCurrentSurface) {
+            if (
+              matchesCurrentSurface &&
+              existingConversationSession.folder.path === folder.path
+            ) {
               try {
                 const messages = (
                   await existingConversationSession.agent.getConversationMessages()
@@ -1744,7 +1865,8 @@ export const createDrawsyBridge = (
                 json(response, 200, {
                   id: existingConversationSession.id,
                   token: existingConversationSession.token,
-                  folderName: existingConversationSession.folder.name,
+                  folderName: folderNameForClient(existingConversationSession.folder),
+                  folder: folderForClient(existingConversationSession.folder),
                   resumed: true,
                   conversation: localConversation,
                   messages
@@ -1761,42 +1883,7 @@ export const createDrawsyBridge = (
             // General history can be resumed in a different non-canvas surface.
             // It gets a new correctly-scoped runtime while retaining its native
             // local Codex/OpenCode session identity.
-            const replacementFolder = selections.get(selectionId);
-            if (
-              !replacementFolder ||
-              replacementFolder.expiresAt <= Date.now()
-            ) {
-              json(response, 400, {
-                error: {
-                  code: "folder_expired",
-                  message: "Choose the folder again."
-                }
-              });
-              return;
-            }
             closeSession(existingConversationSession);
-          }
-          const folder = selections.get(selectionId);
-          if (!folder || folder.expiresAt <= Date.now()) {
-            json(response, 400, {
-              error: {
-                code: "folder_expired",
-                message: "Choose the folder again."
-              }
-            });
-            return;
-          }
-          if (
-            surfaceId &&
-            (surfaceId.length > 128 || !/^[A-Za-z0-9:_-]+$/.test(surfaceId))
-          ) {
-            json(response, 400, {
-              error: {
-                code: "surface_invalid",
-                message: "The Drawsy surface id is invalid."
-              }
-            });
-            return;
           }
           const id = randomUUID();
           const token = randomBytes(32).toString("base64url");
@@ -1815,6 +1902,9 @@ export const createDrawsyBridge = (
               surfaceKind: validatedSurfaceKind,
               surfaceId,
               surfaceName,
+              workspaceMode: folder.userSelected
+                ? ("selected" as const)
+                : ("private" as const),
               isolateProcessGroup: false,
               previewPort: null
             };
@@ -1922,6 +2012,16 @@ export const createDrawsyBridge = (
           sessionRef = session;
           sessions.set(id, session);
           if (conversationId) conversationSessions.set(conversationId, session);
+          if (
+            folder.userSelected &&
+            (validatedSurfaceKind === "canvas" ||
+              validatedSurfaceKind === "presentation")
+          ) {
+            await localConversations.rememberFolder(
+              canvasId,
+              folder.path
+            );
+          }
           localConversation = await localConversations.setNativeSession(
             conversationId,
             engine,
@@ -1944,7 +2044,8 @@ export const createDrawsyBridge = (
           json(response, 201, {
             id,
             token,
-            folderName: folder.name,
+            folderName: folderNameForClient(folder),
+            folder: folderForClient(folder),
             resumed: hadNativeSession,
             conversation: localConversation,
             messages
@@ -1978,7 +2079,7 @@ export const createDrawsyBridge = (
           `${JSON.stringify({
             type: "session.ready",
             data: {
-              folderName: session.folder.name,
+              folderName: folderNameForClient(session.folder),
               agent: session.agent.metadata
             }
           })}\n`
