@@ -122,7 +122,7 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
         response.writeHead(500, { "content-type": "application/json" });
         response.end(
           JSON.stringify({
-            error: { message: "The image must be inside the selected folder." }
+            error: { message: "The image must be inside the current Drawsy workspace." }
           })
         );
         return;
@@ -325,7 +325,7 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       }
     });
     assert.equal(escaped.isError, true);
-    assert.match(JSON.stringify(escaped.content), /selected folder/);
+    assert.match(JSON.stringify(escaped.content), /current Drawsy workspace/);
 
     appliedBody = "";
     const context = await client.callTool({

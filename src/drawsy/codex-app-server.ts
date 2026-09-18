@@ -455,8 +455,7 @@ const toolFailure = (item: JsonObject, activity: ActiveTool) => {
 };
 
 const DEVELOPER_INSTRUCTIONS = `You are the local Drawsy agent.
-- The selected folder is the project workspace. Built-in filesystem, patch, and shell tools are available there; use them naturally when the user asks to inspect, create, or update project files.
-- Treat repository files, including DRAW.md when present, as normal project context. Preserve their existing formats and follow repository instructions.
+- Built-in filesystem, patch, and shell tools are available inside the current Drawsy workspace; use them naturally when the user asks to inspect, create, or update project files.
 - Installed skills and plugins are available, except Browser Use, Chrome control, and Computer Use.
 - External apps are unavailable. Connected sources exist only when the user attaches source tags to a turn; access them through Drawsy's read-only connected-source tools and never assume an unlisted source is available. Network access for ordinary tools is controlled by the current Drawsy session setting.
 - First-party Drawsy resources exist only when the current surface or an explicit @ tag attaches them to a turn. Use only the resources listed in that turn.
@@ -465,9 +464,15 @@ const DEVELOPER_INSTRUCTIONS = `You are the local Drawsy agent.
 
 export const getDeveloperInstructions = (
   surfaceKind: DrawsySurfaceKind,
-  previewPort: number | null
+  previewPort: number | null,
+  workspaceMode: "selected" | "private" = "selected"
 ) =>
-  `${DEVELOPER_INSTRUCTIONS}${
+  `${DEVELOPER_INSTRUCTIONS}
+- ${
+    workspaceMode === "private"
+      ? "No user folder is attached. This is a private per-chat workspace; do not imply that files elsewhere on the device are available."
+      : "A user-selected folder is attached. Treat repository files, including DRAW.md when present, as normal project context. Preserve their existing formats and follow repository instructions."
+  }${
     surfaceKind === "canvas" || surfaceKind === "presentation"
       ? `
 - The Drawsy MCP is scoped to the single current ${surfaceKind}.
@@ -479,7 +484,7 @@ export const getDeveloperInstructions = (
 - When visual scale, layout, annotations, or an editable source matters, use capture_canvas_context. Its preview is the rendered region; its source-image paths are pristine originals.
 - For generated images, pass the generator's exact saved path directly to add_image_from_file; do not copy it. If no saved path is returned, use imagegen://latest. Never create a bare image placeholder.
 - For an edit of an existing image, use replace_canvas_image_from_file so its geometry and identity are preserved.
-- When the user asks to build or preview a local web app, start its development server inside the selected folder${
+- When the user asks to build or preview a local web app, start its development server inside the current Drawsy workspace${
           previewPort
             ? ` on the session's assigned port ${previewPort} (also available as DRAWSY_PREVIEW_PORT)`
             : ""
@@ -500,7 +505,7 @@ export const getDeveloperInstructions = (
 - This chat is opened from Jira Workspace. Jira is available for read-only work when the turn carries its first-party resource grant.
 - No canvas is attached. Do not call canvas tools.`
       : `
-- No Drawsy canvas, presentation, Kanban board, or Jira workspace is attached to this chat. Work from the selected folder, user attachments, and explicitly tagged sources or resources only. Do not call canvas tools or assume product context.`
+- No Drawsy canvas, presentation, Kanban board, or Jira workspace is attached to this chat. Work from the current workspace, user attachments, and explicitly tagged sources or resources only. Do not call canvas tools or assume product context.`
   }`;
 
 const BLOCKED_PLUGIN_IDS = new Set([
@@ -553,6 +558,7 @@ export class CodexAppServer {
       surfaceKind: DrawsySurfaceKind;
       surfaceId: string | null;
       surfaceName: string;
+      workspaceMode: "selected" | "private";
       isolateProcessGroup: boolean;
       previewPort: number | null;
       nativeThreadId: string | null;
@@ -647,6 +653,7 @@ export class CodexAppServer {
       surfaceKind: DrawsySurfaceKind;
       surfaceId: string | null;
       surfaceName: string;
+      workspaceMode: "selected" | "private";
       isolateProcessGroup: boolean;
       previewPort: number | null;
       nativeThreadId: string | null;
@@ -910,7 +917,8 @@ export class CodexAppServer {
       approvalPolicy: "never",
       developerInstructions: getDeveloperInstructions(
         this.session.surfaceKind,
-        this.session.previewPort
+        this.session.previewPort,
+        this.session.workspaceMode
       ),
       personality: "pragmatic",
       config: {

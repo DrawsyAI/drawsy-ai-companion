@@ -122,7 +122,7 @@ const workspaceFile = async (workspaceRoot: string, sourcePath: string) => {
   const resolved = await realpath(candidate);
   const relative = path.relative(root, resolved);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    throw new Error("The image must be inside the selected folder.");
+    throw new Error("The image must be inside the current Drawsy workspace.");
   }
   const details = await stat(resolved);
   if (!details.isFile()) {

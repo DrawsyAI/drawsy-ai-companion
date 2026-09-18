@@ -426,7 +426,7 @@ if (surfaceKind === "canvas" || surfaceKind === "presentation") {
     "add_image_from_file",
     {
       description:
-        "Add a real PNG, JPEG, GIF, or WebP to the attached Drawsy canvas. Local files must be inside the selected folder. After image generation, pass the exact saved path returned by the generator; Drawsy securely recognizes that session-owned output. If no saved path was returned, use imagegen://latest. The image is fitted proportionally within the requested bounds.",
+        "Add a real PNG, JPEG, GIF, or WebP to the attached Drawsy canvas. Local files must be inside the current Drawsy workspace; that is the selected folder when one is attached, otherwise a private per-chat workspace. After image generation, pass the exact saved path returned by the generator; Drawsy securely recognizes that session-owned output. If no saved path was returned, use imagegen://latest. The image is fitted proportionally within the requested bounds.",
       inputSchema: z.object({
         sourcePath: z
           .string()
@@ -486,7 +486,7 @@ if (surfaceKind === "canvas" || surfaceKind === "presentation") {
     "capture_canvas_context",
     {
       description:
-        "Capture a precise visual region of the current Drawsy canvas as a local PNG, with pristine source-image paths when requested. Use elementIds for a semantic selection or bounds for an exact area. The returned files are session-scoped inside the selected folder and can be inspected or passed to image editing.",
+        "Capture a precise visual region of the current Drawsy canvas as a local PNG, with pristine source-image paths when requested. Use elementIds for a semantic selection or bounds for an exact area. The returned files are session-scoped inside the current Drawsy workspace and can be inspected or passed to image editing.",
       inputSchema: z
         .object({
           elementIds: z
