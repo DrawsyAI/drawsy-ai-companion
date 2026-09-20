@@ -56,11 +56,13 @@
     },
     "asar": true,
     "asarUnpack": [
-      "dist/drawsy/**/*.js"
+      "dist/drawsy/**/*.js",
+      "skills/**/*"
     ],
     "files": [
       "dist/app/**/*",
       "dist/drawsy/**/*",
+      "skills/**/*",
       "build/icon.png",
       "package.json"
     ],
