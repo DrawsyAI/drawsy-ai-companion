@@ -13,6 +13,7 @@ import type {
   AgentMetadata,
   AgentModelOption,
   AgentPromptTag,
+  AgentRecoveryDiagnostic,
   AgentSkillOption,
   AgentSettingsPatch,
   AiResourceId,
@@ -457,17 +458,129 @@ const toolFailure = (item: JsonObject, activity: ActiveTool) => {
   return `${activity.startedMessage} failed.`;
 };
 
+const isNativeBrowserToolFailure = (tool: string, message: string) =>
+  /chrome|browser|node_repl|cua/i.test(tool) &&
+  /drawsy_browser_unavailable|tab marker|dataset\.drawsyTabId|current tab|target tab|chrome extension|native chrome|chrome control|incognito|wrong tab|no (?:open )?tabs|browser control/i.test(
+    message
+  );
+
+const nativeBrowserFailureEvidence =
+  /drawsy_browser_unavailable|different tab marker|wrong tab|couldn['’]t safely identify|(?:dataset\.drawsyTabId|tab marker).{0,120}(?:mismatch|different|absent|missing|not equal|does not|undefined)|(?:native chrome|browser) control.{0,80}(?:unavailable|not available|missing)|(?:chrome )?extension.{0,80}(?:unavailable|not available|not enabled)|incognito.{0,100}(?:extension|unavailable|not available|not enabled)|no (?:open )?tabs/i;
+
+const nativeBrowserResultText = (value: unknown, depth = 0): string => {
+  if (depth > 5) return "";
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => nativeBrowserResultText(entry, depth + 1))
+      .filter(Boolean)
+      .join(" ");
+  }
+  if (!isRecord(value)) return "";
+  return ["error", "message", "output", "text", "content", "result"]
+    .map((key) => nativeBrowserResultText(value[key], depth + 1))
+    .filter(Boolean)
+    .join(" ");
+};
+
+export const nativeBrowserFailureFromItem = (
+  item: JsonObject,
+  activity: { tool: string },
+  failure: string | undefined
+) => {
+  const toolIdentity = [
+    activity.tool,
+    item.type,
+    item.tool,
+    item.server,
+    item.command
+  ]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ");
+  const canControlBrowser = /chrome|browser|node_repl|cua|dynamicToolCall/i.test(
+    toolIdentity
+  );
+  if (!canControlBrowser) return undefined;
+  if (failure && isNativeBrowserToolFailure(activity.tool, failure)) {
+    return failure;
+  }
+  const resultText = nativeBrowserResultText([
+    item.error,
+    item.result,
+    item.output,
+    item.message
+  ]).slice(0, 1200);
+  return nativeBrowserFailureEvidence.test(resultText)
+    ? resultText.slice(0, 500)
+    : undefined;
+};
+
+const recoveryLinksFromText = (
+  message: string
+): Array<{ label: string; url: string }> => {
+  const links = new Map<string, string>();
+  const add = (label: string, rawUrl: string) => {
+    const url = rawUrl.replace(/[.,!?;:]+$/g, "");
+    if (!url || links.has(url)) {
+      return;
+    }
+    links.set(url, label.trim() || "Open link");
+  };
+
+  const markdownLinks = /\[([^\]\n]{1,120})\]\(((?:https?|codex):\/\/[^)\s]+)\)/gi;
+  for (const match of message.matchAll(markdownLinks)) {
+    add(match[1] || "Open link", match[2] || "");
+  }
+
+  const bareLinks = /(?:https?|codex):\/\/[^\s<>)\]]+/gi;
+  for (const match of message.matchAll(bareLinks)) {
+    add("Open link", match[0] || "");
+  }
+
+  return Array.from(links, ([url, label]) => ({ label, url }));
+};
+
+export const recoveryDiagnosticFromAgentText = (
+  text: string
+): AgentRecoveryDiagnostic | undefined => {
+  if (!/^\s*DRAWSY_BROWSER_UNAVAILABLE:/i.test(text)) {
+    return undefined;
+  }
+  const message = text.replace(/^\s*DRAWSY_BROWSER_UNAVAILABLE:\s*/i, "").trim();
+  return {
+    message:
+      message || "The native browser action could not be completed.",
+    ...(message ? { links: recoveryLinksFromText(message) } : {})
+  };
+};
+
+const nativeBrowserRecoveryDiagnostic = (
+  failure?: string
+): AgentRecoveryDiagnostic => {
+  const message =
+    failure?.trim() ||
+    "The native browser action stopped before it completed.";
+  return {
+    title: "Draw mode needs attention",
+    message,
+    links: recoveryLinksFromText(message)
+  };
+};
+
 const DRAW_MODE_INSTRUCTION = `Draw mode is ON for this turn. It is a deliberate pointer-first mode for the current Drawsy tab, not a request to use every available tool.
 - Use the user's external Google Chrome tab through the native Chrome extension. Do not use Codex's in-app Browser, a custom drawer, a screenshot overlay, or a custom drawing wrapper.
 - For any user-visible canvas manipulation requested as a gesture—freehand, pencil, stroke, sketch, drag, drop, move, resize, click, select, or choosing a Drawsy tool and dragging a rectangle, ellipse, arrow, or line—operate the real Drawsy UI with native Chrome pointer/keyboard input. Do not translate a pointer request into Drawsy MCP object insertion.
 - Use the actual Drawsy Draw/freehand tool for pencil-like work. Use the actual Drawsy shape tool plus a real drag for a requested shape gesture. Use the actual selection tool for move/resize requests.
 - Use Drawsy MCP for explicitly data-level, editable, bulk, or precise structured changes when the user did not ask for a visual gesture. In mixed work, use native Chrome for gesture portions and Drawsy MCP for structured/data portions.
 - The bundled Drawsy browser-use guide supplies routing and verification knowledge. In this Companion, use the attached control-chrome skill and the exact target-binding contract below; do not invoke an unavailable cua_repl, Codex in-app Browser, or broad Computer Use transport.
-- If native Chrome or the exact calling tab cannot be verified, do not click, type, drag, draw, or substitute MCP objects for the requested gesture. Explain that the target tab was not safely identified.
-- For a pure native gesture, make one compact inspect -> act -> rendered verification pass. Never guess from a stale screenshot, choose the first matching tab, or rediscover the canvas through MCP before acting.`;
+- Skill and plugin paths are internal runtime details. Never tell the user to inspect local Codex skill directories, load a local skill, or install a Drawsy skill; keep skill/plugin names and paths out of user-facing progress and use the concise recovery message below when capability is unavailable.
+- The Drawsy and native-browser guidance is already attached to this turn. Do not use shell or command tools to inspect skill/plugin cache paths, search versioned runtime directories, or rediscover that guidance; if the attached native route is not callable, return the recovery message immediately.
+- If native Chrome is unavailable, do not guess from a controls list or claim that you opened a setup page. Return DRAWSY_BROWSER_UNAVAILABLE: and give the exact next action: check Codex Chrome control at codex://settings/computer-use/chrome; if the ChatGPT Chrome extension is not installed, use https://chromewebstore.google.com/detail/chatgpt/hehggadaopoacecdllhhajmbjkdcmajg?pli=1.
+- Before any native action, make one preflight only: obtain a fresh open-tabs snapshot, claim an exact candidate, and inspect its Drawsy tab marker. If the marker is absent, mismatched, ambiguous, or unavailable in Incognito, stop immediately. Do not inspect other tabs, run shell or unrelated discovery, retry, use Drawsy MCP, or substitute objects. Return a concise final beginning with DRAWSY_BROWSER_UNAVAILABLE: followed by the user-facing fix.
+- After a successful preflight, make one compact inspect -> act -> rendered verification pass. Never guess from a stale screenshot, choose the first matching tab, or rediscover the canvas through MCP before acting.`;
 
 const NATIVE_CHROME_TARGET_INSTRUCTION = (drawsyTabId: string) =>
-  `The calling Drawsy page is identified by this opaque per-tab marker: ${drawsyTabId}. If you need native Chrome, use the documented external-Chrome flow: get the Chrome browser binding, obtain a fresh open-tabs snapshot, and claim only an exact tab object from that snapshot. Candidate URL/title matches are not sufficient because multiple identical Drawsy tabs may be open. After claiming a candidate, inspect its main page and require document.documentElement.dataset.drawsyTabId to equal the marker above before any click, keypress, drag, drop, or drawing. Keep that claimed tab handle for the complete action and rendered verification. If the marker is absent, mismatched, or more than one candidate can be verified, fail closed and ask the user to refresh/focus the intended Drawsy tab; never guess.`;
+  `The calling Drawsy page is identified by this opaque per-tab marker: ${drawsyTabId}. Treat native Chrome target selection as a hard preflight gate: obtain one fresh open-tabs snapshot, claim only an exact candidate, and inspect document.documentElement.dataset.drawsyTabId once before any action. Candidate URL/title matches are not sufficient because multiple identical Drawsy tabs may be open. If the marker is absent, mismatched, ambiguous, or unavailable in Incognito, stop immediately. Do not inspect other tabs, run shell or unrelated discovery, retry, use Drawsy MCP, or guess. Return a concise final beginning with DRAWSY_BROWSER_UNAVAILABLE: followed by the fix (focus and refresh the intended Drawsy tab, allow the browser extension in Incognito, or use a normal Chrome tab). Keep the verified tab handle for the complete action and rendered verification.`;
 
 const DEVELOPER_INSTRUCTIONS = `You are the local Drawsy agent.
 - Built-in filesystem, patch, and shell tools are available inside the current Drawsy workspace; use them naturally when the user asks to inspect, create, or update project files.
@@ -646,6 +759,8 @@ export class CodexAppServer {
   private threadId: string | null = null;
   private turnActive = false;
   private activeTurnId: string | null = null;
+  private activeDrawMode = false;
+  private nativeBrowserFailureInterruptSent = false;
   private agentMetadata: AgentMetadata | null = null;
   private accessMode: AgentAccessMode = "workspace";
   private internetEnabled = true;
@@ -1286,6 +1401,8 @@ export class CodexAppServer {
       : [];
     this.turnActive = true;
     this.activeTurnId = null;
+    this.activeDrawMode = drawMode;
+    this.nativeBrowserFailureInterruptSent = false;
     try {
       const result = (await this.request("turn/start", {
         threadId: this.threadId,
@@ -1378,6 +1495,7 @@ export class CodexAppServer {
     } catch (error) {
       this.turnActive = false;
       this.activeTurnId = null;
+      this.activeDrawMode = false;
       throw error;
     }
   }
@@ -1768,6 +1886,23 @@ export class CodexAppServer {
     this.pending.clear();
   }
 
+  private stopAfterNativeBrowserFailure() {
+    if (
+      !this.turnActive ||
+      !this.activeTurnId ||
+      this.nativeBrowserFailureInterruptSent
+    ) {
+      return;
+    }
+    this.nativeBrowserFailureInterruptSent = true;
+    void this.request("turn/interrupt", {
+      threadId: this.threadId,
+      turnId: this.activeTurnId
+    }).catch((error) => {
+      console.warn("Native browser failure could not stop the turn.", error);
+    });
+  }
+
   private handleLine(line: string) {
     let message: JsonObject;
     try {
@@ -1946,11 +2081,16 @@ export class CodexAppServer {
         this.registerGeneratedImage(generatedImage);
       }
       if (item.type === "agentMessage" && typeof item.text === "string") {
+        const recovery = recoveryDiagnosticFromAgentText(item.text);
+        if (recovery) {
+          this.stopAfterNativeBrowserFailure();
+        }
         this.emit({
           type: "assistant.final",
           data: {
             text: item.text,
-            itemId: typeof item.id === "string" ? item.id : randomUUID()
+            itemId: typeof item.id === "string" ? item.id : randomUUID(),
+            ...(recovery ? { recovery } : {})
           }
         });
       } else if (typeof item.id === "string") {
@@ -1961,13 +2101,25 @@ export class CodexAppServer {
         }
         this.activeTools.delete(item.id);
         const failure = toolFailure(item, activity);
+        const nativeBrowserFailure = nativeBrowserFailureFromItem(
+          item,
+          activity,
+          failure
+        );
+        const effectiveFailure = failure || nativeBrowserFailure;
         const status =
           item.status === "failed" ||
           item.success === false ||
-          failure !== undefined ||
+          effectiveFailure !== undefined ||
           (typeof item.exitCode === "number" && item.exitCode !== 0)
             ? "failed"
             : "completed";
+        if (nativeBrowserFailure) {
+          this.stopAfterNativeBrowserFailure();
+        }
+        const recovery = nativeBrowserFailure
+          ? nativeBrowserRecoveryDiagnostic(nativeBrowserFailure)
+          : undefined;
         this.emit({
           type: "tool.status",
           data: {
@@ -1976,7 +2128,8 @@ export class CodexAppServer {
             status,
             message:
               status === "completed" ? activity.completedMessage : undefined,
-            ...(failure ? { error: failure } : {})
+            ...(effectiveFailure ? { error: effectiveFailure } : {}),
+            ...(recovery ? { recovery } : {})
           }
         });
       }
@@ -1988,14 +2141,21 @@ export class CodexAppServer {
         typeof params.turn.error.message === "string"
           ? params.turn.error.message
           : undefined;
+      const status =
+        typeof params.turn.status === "string"
+          ? params.turn.status
+          : "completed";
+      const recovery =
+        this.activeDrawMode && (Boolean(error) || status !== "completed")
+          ? nativeBrowserRecoveryDiagnostic(error)
+          : undefined;
+      this.activeDrawMode = false;
       this.emit({
         type: "turn.status",
         data: {
-          status:
-            typeof params.turn.status === "string"
-              ? params.turn.status
-              : "completed",
-          ...(error ? { error } : {})
+          status,
+          ...(error ? { error } : {}),
+          ...(recovery ? { recovery } : {})
         }
       });
     } else if (message.method === "error") {
@@ -2003,9 +2163,17 @@ export class CodexAppServer {
         isRecord(params.error) && typeof params.error.message === "string"
           ? params.error.message
           : "Codex encountered an error.";
+      const recovery = this.activeDrawMode
+        ? nativeBrowserRecoveryDiagnostic(error)
+        : undefined;
+      this.activeDrawMode = false;
       this.emit({
         type: "error",
-        data: { code: "codex_error", message: error }
+        data: {
+          code: "codex_error",
+          message: error,
+          ...(recovery ? { recovery } : {})
+        }
       });
     } else if (
       message.method === "warning" ||
