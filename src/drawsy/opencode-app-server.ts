@@ -919,7 +919,9 @@ export class OpenCodeAppServer {
     },
     contexts: AgentContextCapture[] = [],
     connectors: AgentConnectorSource[] = [],
-    resources: AiResourceId[] = []
+    resources: AiResourceId[] = [],
+    drawMode = false,
+    _drawsyTabId?: string | null
   ) {
     if (!this.openCodeSessionId || !this.currentModel) {
       throw new Error("OpenCode is not ready.");
@@ -993,6 +995,12 @@ export class OpenCodeAppServer {
           .join(
             ", "
           )}. Use their dedicated Drawsy MCP tools only if naturally useful. Kanban changes must follow the user's request and existing board permissions; Jira remains read-only.`
+      });
+    }
+    if (drawMode) {
+      parts.push({
+        type: "text",
+        text: "Draw mode is ON for this turn. OpenCode has no native Browser/Chrome control in Drawsy Companion. Use Drawsy MCP for structured canvas work, and clearly say if the user asks for freehand current-tab input that is unavailable in this engine."
       });
     }
     parts.push({ type: "text", text: message });

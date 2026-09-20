@@ -1,6 +1,6 @@
 {
   "name": "@drawsy/companion",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.11.0",
@@ -56,11 +56,13 @@
     },
     "asar": true,
     "asarUnpack": [
-      "dist/drawsy/**/*.js"
+      "dist/drawsy/**/*.js",
+      "skills/**/*"
     ],
     "files": [
       "dist/app/**/*",
       "dist/drawsy/**/*",
+      "skills/**/*",
       "build/icon.png",
       "package.json"
     ],

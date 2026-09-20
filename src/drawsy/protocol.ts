@@ -267,6 +267,21 @@ export type BridgeEvent =
 export const isRecord = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+export const parseDrawsyTabId = (value: unknown): string | null => {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (
+    typeof value !== "string" ||
+    value.length < 16 ||
+    value.length > 128 ||
+    !/^[A-Za-z0-9_-]+$/.test(value)
+  ) {
+    throw new Error("drawsyTabId is invalid.");
+  }
+  return value;
+};
+
 const renderedElementType = (element: JsonObject) => {
   const type = typeof element.type === "string" ? element.type : "unknown";
   const rounded = isRecord(element.roundness);

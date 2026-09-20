@@ -22,6 +22,14 @@ Install and launch the companion when you want to use local mode. It stays visib
 
 The companion does not install, bundle, or authenticate Codex or OpenCode. The user must already have one of those engines available on the device. The tray status reports which engine is detected. Codex is supported on the packaged desktop targets; the current OpenCode runtime supports macOS and Linux.
 
+## Native current-tab drawing
+
+Draw mode uses the user's installed external Google Chrome extension when it is available. It does not target Codex's in-app Browser, copy or publish OpenAI's proprietary browser plugin, expose browser credentials, or add a custom drawing tool. The Drawsy-specific policy tells Codex to use the real Drawsy UI and native pointer input for requested gestures—including selecting a Drawsy shape tool and dragging—while keeping Drawsy MCP for explicit structured/data-level work.
+
+The Chrome plugin and its browser extension must already be installed and connected on the device. Each Drawsy page publishes an opaque per-tab marker; before acting, the agent claims a fresh Chrome tab snapshot and verifies that marker, so identical Drawsy tabs cannot be confused. If the marker cannot be verified, Companion fails closed instead of drawing in a guessed tab or substituting MCP objects for a requested gesture. Broad desktop Computer Use remains disabled.
+
+The release bundles Drawsy's `drawsy-browser-use` and `drawsy-teaching-diagrams` skills, including the browser-use tool catalog. Browser-use guidance is attached for Draw mode and explicit current-tab/browser requests; the teaching skill is attached only in Draw mode. They are an explicit allowlist, so adding future skills does not make the model randomly load every bundled skill.
+
 ## Runtime contract
 
 ```mermaid
