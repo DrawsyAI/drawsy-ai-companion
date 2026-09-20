@@ -13,6 +13,10 @@ import path from "node:path";
 import net from "node:net";
 import test from "node:test";
 
+import {
+  nativeBrowserFailureFromItem,
+  recoveryDiagnosticFromAgentText
+} from "./codex-app-server.js";
 import { createDrawsyBridge } from "./bridge.js";
 import {
   addCanvasRenderSemantics,
@@ -73,6 +77,40 @@ test("only visual canvas surfaces reserve live-preview capacity", () => {
   assert.equal(surfaceSupportsLivePreview("kanban"), false);
   assert.equal(surfaceSupportsLivePreview("jira"), false);
   assert.equal(surfaceSupportsLivePreview("neutral"), false);
+});
+
+test("native browser mismatch results fail closed even when the tool completed", () => {
+  const failure = nativeBrowserFailureFromItem(
+    {
+      type: "dynamicToolCall",
+      tool: "js",
+      result: {
+        content: [
+          {
+            type: "text",
+            text: "The verified tab had a different tab marker."
+          }
+        ]
+      }
+    },
+    { tool: "js" },
+    undefined
+  );
+  assert.match(failure || "", /different tab marker/);
+});
+
+test("agent browser recovery keeps diagnosis links for the client", () => {
+  const recovery = recoveryDiagnosticFromAgentText(
+    "DRAWSY_BROWSER_UNAVAILABLE: Enable the browser control at [settings](codex://settings/computer-use/chrome), then install https://example.com/extension."
+  );
+  assert.deepEqual(recovery, {
+    message:
+      "Enable the browser control at [settings](codex://settings/computer-use/chrome), then install https://example.com/extension.",
+    links: [
+      { label: "settings", url: "codex://settings/computer-use/chrome" },
+      { label: "Open link", url: "https://example.com/extension" }
+    ]
+  });
 });
 
 test("hosted bridge binding keeps internal callbacks on loopback", () => {
@@ -1259,7 +1297,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         (item: { text?: string }) =>
           typeof item.text === "string" &&
           item.text.includes("test-drawsy-tab-identity") &&
-          item.text.includes("document.documentElement.dataset.drawsyTabId")
+          item.text.includes("document.documentElement.dataset.drawsyTabId") &&
+          item.text.includes("DRAWSY_BROWSER_UNAVAILABLE")
       )
     );
     const settings = log.find(

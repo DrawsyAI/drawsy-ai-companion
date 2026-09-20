@@ -158,6 +158,12 @@ export type AgentPluginOption = {
   path: string;
 };
 
+export type AgentRecoveryDiagnostic = {
+  title?: string;
+  message: string;
+  links?: Array<{ label: string; url: string }>;
+};
+
 export type AgentMcpOption = {
   name: string;
   toolCount: number;
@@ -232,8 +238,22 @@ export type BridgeEvent =
       data: { folderName: string | null; agent: AgentMetadata };
     }
   | { type: "assistant.delta"; data: { delta: string; itemId: string } }
-  | { type: "assistant.final"; data: { text: string; itemId: string } }
-  | { type: "turn.status"; data: { status: string; error?: string } }
+  | {
+      type: "assistant.final";
+      data: {
+        text: string;
+        itemId: string;
+        recovery?: AgentRecoveryDiagnostic;
+      };
+    }
+  | {
+      type: "turn.status";
+      data: {
+        status: string;
+        error?: string;
+        recovery?: AgentRecoveryDiagnostic;
+      };
+    }
   | {
       type: "tool.status";
       data: {
@@ -242,6 +262,7 @@ export type BridgeEvent =
         status: "inProgress" | "completed" | "failed" | "warning";
         message?: string;
         error?: string;
+        recovery?: AgentRecoveryDiagnostic;
       };
     }
   | {
@@ -262,7 +283,14 @@ export type BridgeEvent =
         previewRequest?: LivePreviewRequest;
       };
     }
-  | { type: "error"; data: { message: string; code: string } };
+  | {
+      type: "error";
+      data: {
+        message: string;
+        code: string;
+        recovery?: AgentRecoveryDiagnostic;
+      };
+    };
 
 export const isRecord = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
