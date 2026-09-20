@@ -814,10 +814,15 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       (skill) => skill.name === "drawsy-browser-use"
     );
     assert.ok(bundledBrowserSkill);
-    assert.equal(bundledBrowserSkill.path.includes("/.codex/"), false);
     assert.equal(
-      bundledBrowserSkill.path.endsWith(
-        "/skills/drawsy-browser-use/SKILL.md"
+      path.normalize(bundledBrowserSkill.path).includes(
+        `${path.sep}.codex${path.sep}`
+      ),
+      false
+    );
+    assert.equal(
+      path.normalize(bundledBrowserSkill.path).endsWith(
+        path.join("skills", "drawsy-browser-use", "SKILL.md")
       ),
       true
     );

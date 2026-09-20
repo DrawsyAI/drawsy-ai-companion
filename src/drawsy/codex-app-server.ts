@@ -593,7 +593,7 @@ const loadBundledSkills = async (): Promise<AgentSkillOption[]> => {
           const skillPath = path.join(bundledSkillRoot, entry.name, "SKILL.md");
           try {
             const content = await readFile(skillPath, "utf8");
-            const frontmatter = content.match(/^---\n([\s\S]*?)\n---/);
+            const frontmatter = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
             if (!frontmatter) return null;
             const metadata = frontmatter[1] ?? "";
             const name = readFrontmatterValue(metadata, "name");
