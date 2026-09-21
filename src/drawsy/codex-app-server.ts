@@ -1,9 +1,9 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
+import { access, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import readline from "node:readline";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import type {
   AgentAccessMode,
@@ -467,6 +467,10 @@ const isNativeBrowserToolFailure = (tool: string, message: string) =>
 const nativeBrowserFailureEvidence =
   /drawsy_browser_unavailable|different tab marker|wrong tab|couldn['’]t safely identify|(?:dataset\.drawsyTabId|tab marker).{0,120}(?:mismatch|different|absent|missing|not equal|does not|undefined)|(?:native chrome|browser) control.{0,80}(?:unavailable|not available|missing)|(?:chrome )?extension.{0,80}(?:unavailable|not available|not enabled)|incognito.{0,100}(?:extension|unavailable|not available|not enabled)|no (?:open )?tabs/i;
 
+export const isNativeBrowserFailureText = (value: string) =>
+  /^\s*DRAWSY_BROWSER_UNAVAILABLE:/i.test(value) ||
+  nativeBrowserFailureEvidence.test(value);
+
 const nativeBrowserResultText = (value: unknown, depth = 0): string => {
   if (depth > 5) return "";
   if (typeof value === "string") return value;
@@ -497,9 +501,10 @@ export const nativeBrowserFailureFromItem = (
   ]
     .filter((value): value is string => typeof value === "string")
     .join(" ");
-  const canControlBrowser = /chrome|browser|node_repl|cua|dynamicToolCall/i.test(
-    toolIdentity
-  );
+  const canControlBrowser =
+    item.type === "dynamicToolCall" ||
+    (item.type === "mcpToolCall" &&
+      /chrome|browser|node_repl|cua/i.test(toolIdentity));
   if (!canControlBrowser) return undefined;
   if (failure && isNativeBrowserToolFailure(activity.tool, failure)) {
     return failure;
@@ -515,55 +520,54 @@ export const nativeBrowserFailureFromItem = (
     : undefined;
 };
 
-const recoveryLinksFromText = (
-  message: string
-): Array<{ label: string; url: string }> => {
-  const links = new Map<string, string>();
-  const add = (label: string, rawUrl: string) => {
-    const url = rawUrl.replace(/[.,!?;:]+$/g, "");
-    if (!url || links.has(url)) {
-      return;
-    }
-    links.set(url, label.trim() || "Open link");
-  };
-
-  const markdownLinks = /\[([^\]\n]{1,120})\]\(((?:https?|codex):\/\/[^)\s]+)\)/gi;
-  for (const match of message.matchAll(markdownLinks)) {
-    add(match[1] || "Open link", match[2] || "");
-  }
-
-  const bareLinks = /(?:https?|codex):\/\/[^\s<>)\]]+/gi;
-  for (const match of message.matchAll(bareLinks)) {
-    add("Open link", match[0] || "");
-  }
-
-  return Array.from(links, ([url, label]) => ({ label, url }));
-};
-
 export const recoveryDiagnosticFromAgentText = (
   text: string
 ): AgentRecoveryDiagnostic | undefined => {
   if (!/^\s*DRAWSY_BROWSER_UNAVAILABLE:/i.test(text)) {
     return undefined;
   }
-  const message = text.replace(/^\s*DRAWSY_BROWSER_UNAVAILABLE:\s*/i, "").trim();
   return {
-    message:
-      message || "The native browser action could not be completed.",
-    ...(message ? { links: recoveryLinksFromText(message) } : {})
+    title: "Chrome control needs attention",
+    message: nativeBrowserRecoveryMessage(text),
+    links: [
+      { label: "Chrome settings", url: NATIVE_BROWSER_SETTINGS_URL },
+      {
+        label: "ChatGPT Chrome extension",
+        url: NATIVE_BROWSER_EXTENSION_URL
+      }
+    ]
   };
+};
+
+const NATIVE_BROWSER_SETTINGS_URL =
+  "codex://settings/computer-use/chrome";
+const NATIVE_BROWSER_EXTENSION_URL =
+  "https://chromewebstore.google.com/detail/chatgpt/hehggadaopoacecdllhhajmbjkdcmajg?pli=1";
+
+const nativeBrowserRecoveryMessage = (failure?: string) => {
+  const value = failure?.replace(/^\s*DRAWSY_BROWSER_UNAVAILABLE:\s*/i, "").trim();
+  if (value && /(?:dataset\.drawsyTabId|tab marker|wrong tab|different tab|couldn['’]t safely identify|ambiguous|no (?:open )?tabs|no exact drawsy tab|no matching drawsy tab)/i.test(value)) {
+    return "The intended Drawsy tab could not be verified. Focus that tab and refresh it, then try again. No canvas action was made.";
+  }
+  if (value && /(?:incognito|extension).{0,100}(?:unavailable|not available|wasn['’]t available|missing|not enabled)|(?:native chrome|browser) control.{0,80}(?:unavailable|not available|wasn['’]t available|missing)/i.test(value)) {
+    return "Native Chrome control was unavailable in this session. Check Chrome control in Codex settings, then try again. No canvas action was made.";
+  }
+  return "Draw mode could not access native Chrome control in this session. No canvas action was made.";
 };
 
 const nativeBrowserRecoveryDiagnostic = (
   failure?: string
 ): AgentRecoveryDiagnostic => {
-  const message =
-    failure?.trim() ||
-    "The native browser action stopped before it completed.";
   return {
-    title: "Draw mode needs attention",
-    message,
-    links: recoveryLinksFromText(message)
+    title: "Chrome control needs attention",
+    message: nativeBrowserRecoveryMessage(failure),
+    links: [
+      { label: "Chrome settings", url: NATIVE_BROWSER_SETTINGS_URL },
+      {
+        label: "ChatGPT Chrome extension",
+        url: NATIVE_BROWSER_EXTENSION_URL
+      }
+    ]
   };
 };
 
@@ -572,15 +576,54 @@ const DRAW_MODE_INSTRUCTION = `Draw mode is ON for this turn. It is a deliberate
 - For any user-visible canvas manipulation requested as a gesture—freehand, pencil, stroke, sketch, drag, drop, move, resize, click, select, or choosing a Drawsy tool and dragging a rectangle, ellipse, arrow, or line—operate the real Drawsy UI with native Chrome pointer/keyboard input. Do not translate a pointer request into Drawsy MCP object insertion.
 - Use the actual Drawsy Draw/freehand tool for pencil-like work. Use the actual Drawsy shape tool plus a real drag for a requested shape gesture. Use the actual selection tool for move/resize requests.
 - Use Drawsy MCP for explicitly data-level, editable, bulk, or precise structured changes when the user did not ask for a visual gesture. In mixed work, use native Chrome for gesture portions and Drawsy MCP for structured/data portions.
-- The bundled Drawsy browser-use guide supplies routing and verification knowledge. In this Companion, use the attached control-chrome skill and the exact target-binding contract below; do not invoke an unavailable cua_repl, Codex in-app Browser, or broad Computer Use transport.
+- The bundled Drawsy browser-use guide supplies routing and verification knowledge. In this Companion, use the attached native-browser guidance and the exact target-binding contract below; do not invoke a browser or desktop-control transport that is not callable in this turn.
 - Skill and plugin paths are internal runtime details. Never tell the user to inspect local Codex skill directories, load a local skill, or install a Drawsy skill; keep skill/plugin names and paths out of user-facing progress and use the concise recovery message below when capability is unavailable.
 - The Drawsy and native-browser guidance is already attached to this turn. Do not use shell or command tools to inspect skill/plugin cache paths, search versioned runtime directories, or rediscover that guidance; if the attached native route is not callable, return the recovery message immediately.
-- If native Chrome is unavailable, do not guess from a controls list or claim that you opened a setup page. Return DRAWSY_BROWSER_UNAVAILABLE: and give the exact next action: check Codex Chrome control at codex://settings/computer-use/chrome; if the ChatGPT Chrome extension is not installed, use https://chromewebstore.google.com/detail/chatgpt/hehggadaopoacecdllhhajmbjkdcmajg?pli=1.
-- Before any native action, make one preflight only: obtain a fresh open-tabs snapshot, claim an exact candidate, and inspect its Drawsy tab marker. If the marker is absent, mismatched, ambiguous, or unavailable in Incognito, stop immediately. Do not inspect other tabs, run shell or unrelated discovery, retry, use Drawsy MCP, or substitute objects. Return a concise final beginning with DRAWSY_BROWSER_UNAVAILABLE: followed by the user-facing fix.
+- If native Chrome is unavailable, do not guess whether the cause is a profile, Incognito, extension, or settings issue. Return DRAWSY_BROWSER_UNAVAILABLE: with the observed diagnosis if one exists; otherwise say that native Chrome control was unavailable in this session. Do not expose skill paths or internal transport names. Include the official recovery URLs codex://settings/computer-use/chrome and https://chromewebstore.google.com/detail/chatgpt/hehggadaopoacecdllhhajmbjkdcmajg?pli=1.
+- Before any native action, make one bounded preflight across the connected Chrome extension instances exactly as specified below. Inspect only tabs whose URL exactly equals the calling Drawsy URL, then verify their Drawsy tab markers. If no single marker match exists after that bounded scan, stop immediately. Do not inspect unrelated tabs, run shell or unrelated discovery, retry a candidate, use Drawsy MCP, or substitute objects. Return a concise final beginning with DRAWSY_BROWSER_UNAVAILABLE: followed by the observed user-facing fix.
 - After a successful preflight, make one compact inspect -> act -> rendered verification pass. Never guess from a stale screenshot, choose the first matching tab, or rediscover the canvas through MCP before acting.`;
 
-const NATIVE_CHROME_TARGET_INSTRUCTION = (drawsyTabId: string) =>
-  `The calling Drawsy page is identified by this opaque per-tab marker: ${drawsyTabId}. Treat native Chrome target selection as a hard preflight gate: obtain one fresh open-tabs snapshot, claim only an exact candidate, and inspect document.documentElement.dataset.drawsyTabId once before any action. Candidate URL/title matches are not sufficient because multiple identical Drawsy tabs may be open. If the marker is absent, mismatched, ambiguous, or unavailable in Incognito, stop immediately. Do not inspect other tabs, run shell or unrelated discovery, retry, use Drawsy MCP, or guess. Return a concise final beginning with DRAWSY_BROWSER_UNAVAILABLE: followed by the fix (focus and refresh the intended Drawsy tab, allow the browser extension in Incognito, or use a normal Chrome tab). Keep the verified tab handle for the complete action and rendered verification.`;
+const NATIVE_CHROME_TARGET_INSTRUCTION = (
+  drawsyTabId: string,
+  drawsyTabUrl: string,
+  browserClientUrl: string
+) =>
+  `Native external Chrome control is callable in this turn through mcp__node_repl__js. Do not infer availability from tool names and do not search ALL_TOOLS, local files, plugin caches, skill directories, object prototypes, or runtime internals. Run the following two mcp__node_repl__js calls exactly as written, in order, before deciding whether Chrome or the target tab is unavailable. When invoking either call through code-mode exec, begin the outer exec script with // @exec: {"max_output_tokens": 20000}.
+
+First call — initialize once, inventory connected Chrome extension instances, and emit the complete browser documentation:
+\`\`\`js
+const { setupBrowserRuntime } = await import(${JSON.stringify(browserClientUrl)});
+const agent = await setupBrowserRuntime();
+const browserInfos = await agent.browsers.list();
+const chromeBrowserInfos = browserInfos.filter((info) => info.type === "extension" && info.family === "chrome");
+const documentationBrowser = chromeBrowserInfos.length ? await agent.browsers.get(chromeBrowserInfos[0].id) : null;
+if (documentationBrowser) nodeRepl.write(await documentationBrowser.documentation());
+else nodeRepl.write("DRAWSY_NO_CONNECTED_CHROME");
+\`\`\`
+
+Second call — scan only the exact calling URL across every connected Chrome instance, verify the opaque marker, and preserve the single verified handles for the drawing action:
+\`\`\`js
+let exactUrlCandidateCount = 0;
+const verifiedMatches = [];
+for (const info of chromeBrowserInfos) {
+  const candidateBrowser = await agent.browsers.get(info.id);
+  const openTabs = await candidateBrowser.user.openTabs();
+  for (const openTab of openTabs) {
+    if (openTab.url !== ${JSON.stringify(drawsyTabUrl)}) continue;
+    exactUrlCandidateCount += 1;
+    const candidateTab = await candidateBrowser.user.claimTab(openTab);
+    const marker = await candidateTab.playwright.evaluate(() => document.documentElement.dataset.drawsyTabId);
+    if (marker === ${JSON.stringify(drawsyTabId)}) verifiedMatches.push({ browser: candidateBrowser, tab: candidateTab });
+  }
+}
+let chrome = verifiedMatches.length === 1 ? verifiedMatches[0].browser : null;
+let drawsyTab = verifiedMatches.length === 1 ? verifiedMatches[0].tab : null;
+nodeRepl.write({ connectedChromeCount: chromeBrowserInfos.length, exactUrlCandidateCount, markerMatchCount: verifiedMatches.length });
+\`\`\`
+
+Do not replace either call with getForUrl(), get("chrome"), property inspection, tool discovery, or a shortened equivalent. If initialization fails, no connected Chrome instance exists, or the second call returns anything other than markerMatchCount: 1, return DRAWSY_BROWSER_UNAVAILABLE: with the observed user-facing diagnosis. If and only if markerMatchCount is 1, use the persisted chrome and drawsyTab handles for all canvas actions and rendered verification.
+
+The calling Drawsy page URL is ${drawsyTabUrl}, and its opaque per-tab marker is ${drawsyTabId}. The URL narrows candidates; it never identifies the tab by itself. For each connected Chrome extension entry, in inventory order: bind it with agent.browsers.get(info.id), emit and read that browser's complete documentation once, obtain one fresh browser.user.openTabs() snapshot, and ignore every tab whose URL is not exactly ${drawsyTabUrl}. Claim each exact-URL candidate once and inspect document.documentElement.dataset.drawsyTabId. Keep scanning the remaining connected Chrome instances until all exact-URL candidates have been checked; finding zero candidates in one profile is not Chrome unavailability and is not permission to stop early. Keep the browser and tab handle only for a candidate whose marker exactly equals ${drawsyTabId}. Exactly one total marker match is required before any canvas action. If there are zero or multiple total matches, stop without touching the canvas. Do not inspect unrelated tabs, run shell or unrelated discovery, retry a candidate, use Drawsy MCP, or guess. Return a concise final beginning with DRAWSY_BROWSER_UNAVAILABLE: followed by the observed user-facing fix, if one is available. Use the single verified browser/tab handle for the complete action and rendered verification.`;
 
 const DEVELOPER_INSTRUCTIONS = `You are the local Drawsy agent.
 - Built-in filesystem, patch, and shell tools are available inside the current Drawsy workspace; use them naturally when the user asks to inspect, create, or update project files.
@@ -638,7 +681,6 @@ export const getDeveloperInstructions = (
 - No Drawsy canvas, presentation, Kanban board, or Jira workspace is attached to this chat. Work from the current workspace, user attachments, and explicitly tagged sources or resources only. Do not call canvas tools or assume product context.`
   }`;
 
-const NATIVE_CHROME_PLUGIN_ID = "chrome@openai-bundled";
 const BUNDLED_SKILL_NAMES = new Set([
   "drawsy-browser-use",
   "drawsy-teaching-diagrams"
@@ -667,22 +709,52 @@ const nativeChromeCapability = (value: string) =>
   /(^|[-_\\/@\s])chrome([-_\\/@\s]|$)/i.test(value) &&
   !/computer/i.test(value);
 
-const hasAvailablePlugin = (value: unknown, pluginId: string) =>
-  isRecord(value) &&
-  Array.isArray(value.marketplaces) &&
-  value.marketplaces.some(
-    (marketplace) =>
-      isRecord(marketplace) &&
-      Array.isArray(marketplace.plugins) &&
-      marketplace.plugins.some(
-        (plugin) =>
-          isRecord(plugin) &&
-          plugin.id === pluginId &&
-          plugin.installed === true &&
-          plugin.enabled === true &&
-          plugin.availability === "AVAILABLE"
-      )
-  );
+type NativeChromePlugin = { id: string; path: string };
+
+const availableNativeChromePlugin = (
+  value: unknown
+): NativeChromePlugin | null => {
+  if (!isRecord(value) || !Array.isArray(value.marketplaces)) {
+    return null;
+  }
+  for (const marketplace of value.marketplaces) {
+    if (!isRecord(marketplace) || !Array.isArray(marketplace.plugins)) {
+      continue;
+    }
+    for (const plugin of marketplace.plugins) {
+      if (
+        !isRecord(plugin) ||
+        plugin.installed !== true ||
+        plugin.enabled !== true ||
+        plugin.availability !== "AVAILABLE" ||
+        typeof plugin.id !== "string"
+      ) {
+        continue;
+      }
+      const pluginInterface = isRecord(plugin.interface)
+        ? plugin.interface
+        : {};
+      const displayName =
+        typeof pluginInterface.displayName === "string"
+          ? pluginInterface.displayName.trim().toLowerCase()
+          : "";
+      const pluginName =
+        typeof plugin.name === "string" ? plugin.name.trim().toLowerCase() : "";
+      const pluginSource = isRecord(plugin.source) ? plugin.source : {};
+      const pluginPath =
+        pluginSource.type === "local" && typeof pluginSource.path === "string"
+          ? pluginSource.path
+          : "";
+      if (
+        pluginPath &&
+        (displayName === "chrome" || pluginName === "chrome")
+      ) {
+        return { id: plugin.id, path: pluginPath };
+      }
+    }
+  }
+  return null;
+};
 
 const bundledSkillRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -767,6 +839,8 @@ export class CodexAppServer {
   private lastControls: AgentControls | null = null;
   private threadBaseConfig: JsonObject | null = null;
   private nativeChromeAvailable = false;
+  private nativeChromePluginId: string | null = null;
+  private nativeChromeBrowserClientUrl: string | null = null;
   private bundledSkills: AgentSkillOption[] = [];
   private closed = false;
   private failureReported = false;
@@ -1066,9 +1140,6 @@ export class CodexAppServer {
     const currentMcpServers = isRecord(currentConfig.mcp_servers)
       ? currentConfig.mcp_servers
       : {};
-    const currentPlugins = isRecord(currentConfig.plugins)
-      ? currentConfig.plugins
-      : {};
     const nodeRepl = isRecord(currentMcpServers.node_repl)
       ? currentMcpServers.node_repl
       : null;
@@ -1089,9 +1160,10 @@ export class CodexAppServer {
           .split(",")
           .map((backend: string) => backend.trim().toLowerCase())
       : null;
+    // An omitted backend declaration is not proof that this runtime can
+    // control Chrome. Draw mode must fail closed instead of guessing.
     const nativeChromeBackendAvailable =
-      configuredBrowserBackends === null ||
-      configuredBrowserBackends.includes("chrome");
+      configuredBrowserBackends?.includes("chrome") === true;
     if (configuredBrowserBackends !== null) {
       nodeReplEnv.BROWSER_USE_AVAILABLE_BACKENDS = configuredBrowserBackends
         .filter((backend) => backend === "chrome")
@@ -1114,30 +1186,34 @@ export class CodexAppServer {
           enabled: true
         }
       : null;
-    let nativeChromeListed = false;
+    let nativeChromePlugin: NativeChromePlugin | null = null;
     try {
       const pluginList = await this.request("plugin/list", {
         cwds: [this.folderPath],
         marketplaceKinds: ["local"]
       });
-      nativeChromeListed = hasAvailablePlugin(
-        pluginList,
-        NATIVE_CHROME_PLUGIN_ID
-      );
+      nativeChromePlugin = availableNativeChromePlugin(pluginList);
     } catch (error) {
-      console.warn(
-        "Codex plugin availability could not be read; falling back to config.",
-        error
-      );
+      console.warn("Codex plugin availability could not be read.", error);
     }
-    const nativeChromeConfigured =
-      nativeChromeListed ||
-      (isRecord(currentPlugins[NATIVE_CHROME_PLUGIN_ID]) &&
-        currentPlugins[NATIVE_CHROME_PLUGIN_ID].enabled === true);
+    const nativeChromeBrowserClientPath = nativeChromePlugin
+      ? path.join(nativeChromePlugin.path, "scripts", "browser-client.mjs")
+      : null;
+    const nativeChromeBrowserClientAvailable = nativeChromeBrowserClientPath
+      ? await access(nativeChromeBrowserClientPath).then(
+          () => true,
+          () => false
+        )
+      : false;
+    this.nativeChromePluginId = nativeChromePlugin?.id || null;
+    this.nativeChromeBrowserClientUrl = nativeChromeBrowserClientAvailable
+      ? pathToFileURL(nativeChromeBrowserClientPath!).href
+      : null;
     this.nativeChromeAvailable = Boolean(
       nativeChromeMcpConfig &&
-        nativeChromeConfigured &&
-        nativeChromeBackendAvailable
+        nativeChromePlugin &&
+        nativeChromeBackendAvailable &&
+        this.nativeChromeBrowserClientUrl
     );
     this.bundledSkills = await loadBundledSkills();
     const disabledMcpServers = Object.fromEntries(
@@ -1150,9 +1226,9 @@ export class CodexAppServer {
         "browser@openai-bundled": {
           enabled: false
         },
-        "chrome@openai-bundled": {
-          enabled: this.nativeChromeAvailable
-        },
+        ...(this.nativeChromePluginId
+          ? { [this.nativeChromePluginId]: { enabled: this.nativeChromeAvailable } }
+          : {}),
         "computer-use@openai-bundled": { enabled: false },
         "unified-computer-use@openai-bundled": { enabled: false }
       },
@@ -1329,7 +1405,8 @@ export class CodexAppServer {
     connectors: AgentConnectorSource[] = [],
     resources: AiResourceId[] = [],
     drawMode = false,
-    drawsyTabId?: string | null
+    drawsyTabId?: string | null,
+    drawsyTabUrl?: string | null
   ) {
     if (!this.threadId || this.turnActive) {
       throw new Error(
@@ -1359,7 +1436,9 @@ export class CodexAppServer {
     }
     const nativeChromeRequested = drawMode || NATIVE_CHROME_INTENT.test(message);
     const preferredNativeChromePlugin = nativeChromeRequested
-      ? controls.plugins.find((plugin) => plugin.id === NATIVE_CHROME_PLUGIN_ID)
+      ? controls.plugins.find(
+          (plugin) => plugin.id === this.nativeChromePluginId
+        )
       : undefined;
     const nativeDrawPlugins = preferredNativeChromePlugin
       ? [preferredNativeChromePlugin].filter(
@@ -1384,6 +1463,11 @@ export class CodexAppServer {
           );
         })
       : [];
+    if (drawMode && !this.nativeChromeAvailable) {
+      throw new Error(
+        `DRAWSY_BROWSER_UNAVAILABLE: ${nativeBrowserRecoveryMessage()}`
+      );
+    }
     const bundledTurnSkillNames = drawMode
       ? DRAW_MODE_BUNDLED_SKILL_NAMES
       : nativeChromeRequested
@@ -1475,11 +1559,18 @@ export class CodexAppServer {
           ...(drawMode
             ? [{ type: "text", text: DRAW_MODE_INSTRUCTION, text_elements: [] }]
             : []),
-          ...(drawsyTabId
+          ...(nativeChromeRequested &&
+          drawsyTabId &&
+          drawsyTabUrl &&
+          this.nativeChromeBrowserClientUrl
             ? [
                 {
                   type: "text",
-                  text: NATIVE_CHROME_TARGET_INSTRUCTION(drawsyTabId),
+                  text: NATIVE_CHROME_TARGET_INSTRUCTION(
+                    drawsyTabId,
+                    drawsyTabUrl,
+                    this.nativeChromeBrowserClientUrl
+                  ),
                   text_elements: []
                 }
               ]
@@ -1672,9 +1763,7 @@ export class CodexAppServer {
             if (!pluginPath) return [];
             const isNativeChromePlugin =
               this.nativeChromeAvailable &&
-              plugin.id === NATIVE_CHROME_PLUGIN_ID &&
-              (nativeChromeCapability(plugin.id) ||
-                nativeChromeCapability(pluginPath));
+              plugin.id === this.nativeChromePluginId;
             if (blockedCapability(plugin.id) && !isNativeChromePlugin) {
               return [];
             }
@@ -2146,7 +2235,7 @@ export class CodexAppServer {
           ? params.turn.status
           : "completed";
       const recovery =
-        this.activeDrawMode && (Boolean(error) || status !== "completed")
+        this.activeDrawMode && error && isNativeBrowserFailureText(error)
           ? nativeBrowserRecoveryDiagnostic(error)
           : undefined;
       this.activeDrawMode = false;
@@ -2163,9 +2252,10 @@ export class CodexAppServer {
         isRecord(params.error) && typeof params.error.message === "string"
           ? params.error.message
           : "Codex encountered an error.";
-      const recovery = this.activeDrawMode
-        ? nativeBrowserRecoveryDiagnostic(error)
-        : undefined;
+      const recovery =
+        this.activeDrawMode && isNativeBrowserFailureText(error)
+          ? nativeBrowserRecoveryDiagnostic(error)
+          : undefined;
       this.activeDrawMode = false;
       this.emit({
         type: "error",

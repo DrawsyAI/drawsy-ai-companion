@@ -10,11 +10,13 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import net from "node:net";
 import test from "node:test";
 
 import {
   nativeBrowserFailureFromItem,
+  isNativeBrowserFailureText,
   recoveryDiagnosticFromAgentText
 } from "./codex-app-server.js";
 import { createDrawsyBridge } from "./bridge.js";
@@ -25,6 +27,7 @@ import {
   parseCanvasContextReference,
   parseCanvasContextRequest,
   parseCanvasOperations,
+  parseDrawsyTabUrl,
   parseLivePreviewRequest,
   surfaceSupportsLivePreview
 } from "./protocol.js";
@@ -79,6 +82,15 @@ test("only visual canvas surfaces reserve live-preview capacity", () => {
   assert.equal(surfaceSupportsLivePreview("neutral"), false);
 });
 
+test("Draw mode tab URLs accept web pages only", () => {
+  assert.equal(
+    parseDrawsyTabUrl("http://localhost:3001/path#canvas"),
+    "http://localhost:3001/path#canvas"
+  );
+  assert.throws(() => parseDrawsyTabUrl("file:///tmp/drawsy"), /invalid/);
+  assert.throws(() => parseDrawsyTabUrl("not a URL"), /invalid/);
+});
+
 test("native browser mismatch results fail closed even when the tool completed", () => {
   const failure = nativeBrowserFailureFromItem(
     {
@@ -99,18 +111,50 @@ test("native browser mismatch results fail closed even when the tool completed",
   assert.match(failure || "", /different tab marker/);
 });
 
+test("generic Draw mode failures do not masquerade as browser failures", () => {
+  assert.equal(
+    isNativeBrowserFailureText("The Codex session could not complete this request."),
+    false
+  );
+  assert.equal(
+    isNativeBrowserFailureText("Native Chrome control was unavailable in this session."),
+    true
+  );
+});
+
 test("agent browser recovery keeps diagnosis links for the client", () => {
   const recovery = recoveryDiagnosticFromAgentText(
     "DRAWSY_BROWSER_UNAVAILABLE: Enable the browser control at [settings](codex://settings/computer-use/chrome), then install https://example.com/extension."
   );
   assert.deepEqual(recovery, {
+    title: "Chrome control needs attention",
     message:
-      "Enable the browser control at [settings](codex://settings/computer-use/chrome), then install https://example.com/extension.",
+      "Draw mode could not access native Chrome control in this session. No canvas action was made.",
     links: [
-      { label: "settings", url: "codex://settings/computer-use/chrome" },
-      { label: "Open link", url: "https://example.com/extension" }
+      { label: "Chrome settings", url: "codex://settings/computer-use/chrome" },
+      {
+        label: "ChatGPT Chrome extension",
+        url: "https://chromewebstore.google.com/detail/chatgpt/hehggadaopoacecdllhhajmbjkdcmajg?pli=1"
+      }
     ]
   });
+});
+
+test("agent browser recovery never exposes model-provided internal links", () => {
+  const recovery = recoveryDiagnosticFromAgentText(
+    "DRAWSY_BROWSER_UNAVAILABLE: Check `codex://settings/computer-use/chrome`; install https://chromewebstore.google.com/detail/chatgpt/hehggadaopoacecdllhhajmbjkdcmajg?pli=1`."
+  );
+  assert.doesNotMatch(recovery?.message || "", /codex:|chromewebstore|\.codex|node_repl|cua_repl/);
+  assert.deepEqual(recovery?.links, [
+    {
+      label: "Chrome settings",
+      url: "codex://settings/computer-use/chrome"
+    },
+    {
+      label: "ChatGPT Chrome extension",
+      url: "https://chromewebstore.google.com/detail/chatgpt/hehggadaopoacecdllhhajmbjkdcmajg?pli=1"
+    }
+  ]);
 });
 
 test("hosted bridge binding keeps internal callbacks on loopback", () => {
@@ -384,13 +428,21 @@ test("bridge keeps Codex controls inside the selected-folder boundary", async ()
   const root = await mkdtemp(path.join(tmpdir(), "drawsy-bridge-test-"));
   const selectedFolder = path.join(root, "workspace");
   const requestLog = path.join(root, "requests.ndjson");
+  const chromePluginRoot = path.join(root, "plugins", "chrome");
+  const chromeBrowserClient = path.join(
+    chromePluginRoot,
+    "scripts",
+    "browser-client.mjs"
+  );
   const fakeCodexScript = path.join(root, "fake-codex.mjs");
   const fakeCodex =
     process.platform === "win32"
       ? path.join(root, "fake-codex.cmd")
       : fakeCodexScript;
   const generatedImage = path.join(root, "generated-raccoon.png");
-  await import("node:fs/promises").then(({ mkdir }) => mkdir(selectedFolder));
+  await mkdir(selectedFolder);
+  await mkdir(path.dirname(chromeBrowserClient), { recursive: true });
+  await writeFile(chromeBrowserClient, "export const setupBrowserRuntime = () => {};\n");
   await writeFile(
     path.join(selectedFolder, "DRAW.md"),
     "# System map\n\n```mermaid\nflowchart LR\n  Web --> API\n```\n"
@@ -457,14 +509,15 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
   ] } });
   if (message.method === "skills/list") send({ id: message.id, result: { data: [{ cwd: message.params.cwds[0], skills: [
     { name: "documents", description: "Create documents", path: "/plugins/documents/skills/documents/SKILL.md", enabled: true, interface: { displayName: "Documents" } },
-    { name: "control-chrome", description: "Control Chrome", path: "/plugins/chrome/skills/control-chrome/SKILL.md", enabled: true },
     { name: "control-in-app-browser", description: "Control the in-app browser", path: "/plugins/browser/skills/control-in-app-browser/SKILL.md", enabled: true },
     { name: "drawsy-browser-use", description: "Local copy that must not win", path: "/Users/adarsh/.codex/skills/r0/drawsy-browser-use/SKILL.md", enabled: true }
   ], errors: [] }] } });
   if (message.method === "plugin/list") send({ id: message.id, result: { marketplaces: [{ name: "local", path: "/plugins", interface: null, plugins: [
     { id: "documents@openai-primary-runtime", name: "documents", installed: true, enabled: true, availability: "AVAILABLE", source: { type: "local", path: "/plugins/documents" }, interface: { displayName: "Documents", shortDescription: "Document tools", capabilities: ["skills"] } },
     { id: "browser@openai-bundled", name: "browser", installed: true, enabled: true, availability: "AVAILABLE", source: { type: "local", path: "/plugins/browser" }, interface: { displayName: "Browser", shortDescription: "Browser control", capabilities: ["browser"] } },
-    { id: "chrome@openai-bundled", name: "chrome", installed: true, enabled: true, availability: "AVAILABLE", source: { type: "local", path: "/plugins/chrome" }, interface: { displayName: "Chrome", shortDescription: "Chrome control", capabilities: ["chrome"] } }
+    { id: "chrome@vendor", name: "chrome", installed: true, enabled: true, availability: "AVAILABLE", source: { type: "local", path: ${JSON.stringify(
+      chromePluginRoot
+    )} }, interface: { displayName: "Chrome", shortDescription: "Chrome control", capabilities: ["chrome"] } }
   ] }], marketplaceLoadErrors: [], featuredPluginIds: [] } });
   if (message.method === "mcpServerStatus/list") send({ id: message.id, result: { data: [
     { name: "drawsy", tools: { read_current_canvas: {}, apply_canvas_changes: {}, add_image_from_file: {}, capture_canvas_context: {}, replace_canvas_image_from_file: {}, list_connected_sources: {}, list_mail_messages: {}, list_calendars: {}, list_calendar_events: {}, list_drive_files: {}, list_github_repositories: {}, list_github_repository_contents: {}, list_github_issues: {}, list_github_pull_requests: {}, list_notion_content: {}, list_slack_channels: {}, list_slack_messages: {}, search_connected_source: {}, read_connected_item: {} }, authStatus: "unsupported" },
@@ -826,20 +879,16 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     );
     assert.equal(controls.accessMode, "workspace");
     assert.equal(controls.internetEnabled, true);
-    assert.deepEqual(controls.skills.slice(0, 2), [
-      {
-        name: "documents",
-        displayName: "Documents",
-        description: "Create documents",
-        path: "/plugins/documents/skills/documents/SKILL.md"
-      },
-      {
-        name: "control-chrome",
-        displayName: "control-chrome",
-        description: "Control Chrome",
-        path: "/plugins/chrome/skills/control-chrome/SKILL.md"
-      }
-    ]);
+    assert.deepEqual(controls.skills[0], {
+      name: "documents",
+      displayName: "Documents",
+      description: "Create documents",
+      path: "/plugins/documents/skills/documents/SKILL.md"
+    });
+    assert.equal(
+      controls.skills.some((skill) => skill.name === "control-chrome"),
+      false
+    );
     assert.equal(
       controls.skills.some((skill) => skill.name === "drawsy-teaching-diagrams"),
       true
@@ -872,7 +921,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       controls.plugins.map((plugin) => plugin.id),
       [
         "documents@openai-primary-runtime",
-        "chrome@openai-bundled"
+        "chrome@vendor"
       ]
     );
     assert.deepEqual(controls.mcpServers, [
@@ -1029,7 +1078,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         body: JSON.stringify({
           message: "hold",
           drawMode: true,
-          drawsyTabId: "test-drawsy-tab-identity"
+          drawsyTabId: "test-drawsy-tab-identity",
+          drawsyTabUrl: "http://localhost:3001/"
         })
       }
     );
@@ -1120,7 +1170,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       false
     );
     assert.equal(
-      thread.params.config.plugins["chrome@openai-bundled"].enabled,
+      thread.params.config.plugins["chrome@vendor"].enabled,
       true
     );
     assert.equal(
@@ -1258,6 +1308,22 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         text_elements: []
       }
     ]);
+    const regularTurn = log
+      .filter((message) => message.method === "turn/start")
+      .find((message) =>
+        message.params.input.some(
+          (item: { text?: string }) => item.text === "Inspect the folder."
+        )
+      );
+    assert.ok(regularTurn);
+    assert.equal(
+      regularTurn.params.input.some(
+        (item: { text?: string }) =>
+          typeof item.text === "string" &&
+          item.text.includes("document.documentElement.dataset.drawsyTabId")
+      ),
+      false
+    );
     const drawTurn = log
       .filter((message) => message.method === "turn/start")
       .find((message) =>
@@ -1268,11 +1334,12 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         )
       );
     assert.ok(drawTurn);
-    assert.ok(
+    assert.equal(
       drawTurn.params.input.some(
         (item: { type?: string; name?: string }) =>
           item.type === "skill" && item.name === "control-chrome"
-      )
+      ),
+      false
     );
     assert.ok(
       drawTurn.params.input.some(
@@ -1297,6 +1364,13 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         (item: { text?: string }) =>
           typeof item.text === "string" &&
           item.text.includes("test-drawsy-tab-identity") &&
+          item.text.includes("setupBrowserRuntime") &&
+          item.text.includes("agent.browsers.list()") &&
+          item.text.includes("candidateBrowser.user.openTabs()") &&
+          item.text.includes("markerMatchCount") &&
+          item.text.includes("Run the following two") &&
+          item.text.includes("finding zero candidates in one profile") &&
+          item.text.includes(pathToFileURL(chromeBrowserClient).href) &&
           item.text.includes("document.documentElement.dataset.drawsyTabId") &&
           item.text.includes("DRAWSY_BROWSER_UNAVAILABLE")
       )
