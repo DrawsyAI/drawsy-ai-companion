@@ -55,6 +55,7 @@ import {
   parseAgentConnectorTurn,
   parseAgentResourceTurn,
   parseDrawsyTabId,
+  parseDrawsyTabUrl,
   isConnectorCapability,
   type AgentConnectorTurn,
   type AgentEngine,
@@ -2116,8 +2117,10 @@ export const createDrawsyBridge = (
         const connectorTurn = parseAgentConnectorTurn(body.connectors);
         const resourceTurn = parseAgentResourceTurn(body.resources);
         let drawsyTabId: string | null;
+        let drawsyTabUrl: string | null;
         try {
           drawsyTabId = parseDrawsyTabId(body.drawsyTabId);
+          drawsyTabUrl = parseDrawsyTabUrl(body.drawsyTabUrl);
         } catch {
           throw new BridgeRequestError(
             400,
@@ -2125,7 +2128,7 @@ export const createDrawsyBridge = (
             "Draw mode received an invalid calling-tab identity. Refresh this tab and retry."
           );
         }
-        if (body.drawMode === true && !drawsyTabId) {
+        if (body.drawMode === true && (!drawsyTabId || !drawsyTabUrl)) {
           throw new BridgeRequestError(
             400,
             "draw_target_missing",
@@ -2148,7 +2151,8 @@ export const createDrawsyBridge = (
             connectorTurn?.sources || [],
             resourceTurn?.resources || [],
             body.drawMode === true,
-            drawsyTabId
+            drawsyTabId,
+            drawsyTabUrl
           );
           if (session.conversationId) {
             await localConversations
