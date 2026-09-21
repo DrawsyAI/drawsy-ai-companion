@@ -310,6 +310,25 @@ export const parseDrawsyTabId = (value: unknown): string | null => {
   return value;
 };
 
+export const parseDrawsyTabUrl = (value: unknown): string | null => {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (typeof value !== "string" || value.length > 2_048) {
+    throw new Error("drawsyTabUrl is invalid.");
+  }
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("drawsyTabUrl is invalid.");
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error("drawsyTabUrl is invalid.");
+  }
+  return url.href;
+};
+
 const renderedElementType = (element: JsonObject) => {
   const type = typeof element.type === "string" ? element.type : "unknown";
   const rounded = isRecord(element.roundness);
