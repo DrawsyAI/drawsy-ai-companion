@@ -33,11 +33,7 @@ export type CanvasOperations = {
 };
 
 export type CanvasLayoutIssue = {
-  kind:
-    | "overlap"
-    | "text_overflow"
-    | "unbound_text"
-    | "connector_collision";
+  kind: "overlap" | "text_overflow" | "unbound_text" | "connector_collision";
   elementIds: string[];
   message: string;
 };
@@ -148,6 +144,8 @@ export type AgentSkillOption = {
   displayName: string;
   description: string;
   path: string;
+  iconUrl?: string;
+  brandColor?: string;
 };
 
 export type AgentPluginOption = {
@@ -156,6 +154,8 @@ export type AgentPluginOption = {
   description: string;
   capabilities: string[];
   path: string;
+  iconUrl?: string;
+  brandColor?: string;
 };
 
 export type AgentRecoveryDiagnostic = {
@@ -374,7 +374,7 @@ export const addCanvasRenderSemantics = (value: unknown): unknown => {
         backgroundColor:
           typeof renderContext.canvasBackgroundColor === "string"
             ? renderContext.canvasBackgroundColor
-            : "unknown"
+            : "unknown",
       },
       elements: value.elements.flatMap((element) =>
         isRecord(element) &&
@@ -383,12 +383,12 @@ export const addCanvasRenderSemantics = (value: unknown): unknown => {
           ? [
               {
                 id: element.id,
-                renderedType: renderedElementType(element)
-              }
+                renderedType: renderedElementType(element),
+              },
             ]
           : []
-      )
-    }
+      ),
+    },
   };
 };
 
@@ -401,7 +401,7 @@ const CONNECTOR_CAPABILITIES = new Set<ConnectorCapability>([
   "github",
   "read-ai",
   "fireflies",
-  "aws"
+  "aws",
 ]);
 
 export const isConnectorCapability = (
@@ -468,7 +468,7 @@ export const parseAgentConnectorTurn = (
         source.accountLabel,
         "source accountLabel",
         256
-      )
+      ),
     };
   });
   if (
@@ -505,7 +505,7 @@ export const parseAgentConnectorTurn = (
         256
       ),
       grant: boundedConnectorString(grant.grant, "connector grant", 8_192),
-      expiresAt: grant.expiresAt
+      expiresAt: grant.expiresAt,
     };
   });
   if (
@@ -551,7 +551,7 @@ export const parseAgentResourceTurn = (
     turnId: boundedConnectorString(value.turnId, "resource turnId", 256),
     resources: value.resources as AiResourceId[],
     grant: boundedConnectorString(value.grant, "resource grant", 8_192),
-    expiresAt: value.expiresAt
+    expiresAt: value.expiresAt,
   };
 };
 
@@ -600,8 +600,8 @@ export const parseCanvasImageRequest = (value: unknown): CanvasImageRequest => {
       ? {}
       : {
           frameId:
-            value.frameId === null ? null : (value.frameId as string).trim()
-        })
+            value.frameId === null ? null : (value.frameId as string).trim(),
+        }),
   };
 };
 
@@ -673,7 +673,7 @@ export const parseLivePreviewRequest = (value: unknown): LivePreviewRequest => {
     ...(value.x === undefined ? {} : { x: value.x as number }),
     ...(value.y === undefined ? {} : { y: value.y as number }),
     ...(value.width === undefined ? {} : { width: value.width as number }),
-    ...(value.height === undefined ? {} : { height: value.height as number })
+    ...(value.height === undefined ? {} : { height: value.height as number }),
   };
 };
 
@@ -691,7 +691,7 @@ const parseContextBounds = (value: unknown): CanvasContextBounds => {
     x: value.x as number,
     y: value.y as number,
     width: value.width as number,
-    height: value.height as number
+    height: value.height as number,
   };
 };
 
@@ -729,7 +729,7 @@ export const parseCanvasContextRequest = (
     ...(elementIds ? { elementIds } : {}),
     ...(hasBounds ? { bounds: parseContextBounds(value.bounds) } : {}),
     includeSourceImages: value.includeSourceImages !== false,
-    maxDimension: maxDimension as number
+    maxDimension: maxDimension as number,
   };
 };
 
@@ -746,7 +746,7 @@ export const parseCanvasContextReference = (
   return {
     id: value.id,
     elementIds: parseElementIds(value.elementIds),
-    bounds: parseContextBounds(value.bounds)
+    bounds: parseContextBounds(value.bounds),
   };
 };
 
@@ -791,7 +791,7 @@ export const parseCanvasOperations = (value: unknown): CanvasOperations => {
       id: file.id,
       mimeType: file.mimeType,
       dataURL: file.dataURL,
-      created: file.created
+      created: file.created,
     } as CanvasFile;
   });
   if (new Set(parsedFiles.map((file) => file.id)).size !== parsedFiles.length) {

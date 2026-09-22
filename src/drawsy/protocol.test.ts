@@ -6,7 +6,7 @@ import {
   readFile,
   realpath,
   rm,
-  writeFile
+  writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -17,7 +17,7 @@ import test from "node:test";
 import {
   nativeBrowserFailureFromItem,
   isNativeBrowserFailureText,
-  recoveryDiagnosticFromAgentText
+  recoveryDiagnosticFromAgentText,
 } from "./codex-app-server.js";
 import { createDrawsyBridge } from "./bridge.js";
 import {
@@ -29,7 +29,7 @@ import {
   parseCanvasOperations,
   parseDrawsyTabUrl,
   parseLivePreviewRequest,
-  surfaceSupportsLivePreview
+  surfaceSupportsLivePreview,
 } from "./protocol.js";
 
 test("canvas reads expose rendered semantics without changing raw elements", () => {
@@ -39,7 +39,7 @@ test("canvas reads expose rendered semantics without changing raw elements", () 
       type: "ellipse",
       dimensionality: "3d",
       width: 240,
-      height: 160
+      height: 160,
     },
     {
       id: "diamond-1",
@@ -47,21 +47,21 @@ test("canvas reads expose rendered semantics without changing raw elements", () 
       dimensionality: "2d",
       roundness: { type: 2 },
       width: 100,
-      height: 100
+      height: 100,
     },
     {
       id: "deleted-1",
       type: "rectangle",
-      isDeleted: true
-    }
+      isDeleted: true,
+    },
   ];
   const result = addCanvasRenderSemantics({
     canvasId: "canvas-1",
     elements: rawElements,
     renderContext: {
       theme: "dark",
-      canvasBackgroundColor: "#121212"
-    }
+      canvasBackgroundColor: "#121212",
+    },
   }) as { elements: unknown; renderSemantics: unknown };
 
   assert.equal(result.elements, rawElements);
@@ -69,8 +69,8 @@ test("canvas reads expose rendered semantics without changing raw elements", () 
     canvas: { theme: "dark", backgroundColor: "#121212" },
     elements: [
       { id: "cylinder-1", renderedType: "cylinder" },
-      { id: "diamond-1", renderedType: "rounded diamond" }
-    ]
+      { id: "diamond-1", renderedType: "rounded diamond" },
+    ],
   });
 });
 
@@ -100,10 +100,10 @@ test("native browser mismatch results fail closed even when the tool completed",
         content: [
           {
             type: "text",
-            text: "The verified tab had a different tab marker."
-          }
-        ]
-      }
+            text: "The verified tab had a different tab marker.",
+          },
+        ],
+      },
     },
     { tool: "js" },
     undefined
@@ -113,11 +113,15 @@ test("native browser mismatch results fail closed even when the tool completed",
 
 test("generic Draw mode failures do not masquerade as browser failures", () => {
   assert.equal(
-    isNativeBrowserFailureText("The Codex session could not complete this request."),
+    isNativeBrowserFailureText(
+      "The Codex session could not complete this request."
+    ),
     false
   );
   assert.equal(
-    isNativeBrowserFailureText("Native Chrome control was unavailable in this session."),
+    isNativeBrowserFailureText(
+      "Native Chrome control was unavailable in this session."
+    ),
     true
   );
 });
@@ -134,9 +138,9 @@ test("agent browser recovery keeps diagnosis links for the client", () => {
       { label: "Chrome settings", url: "codex://settings/computer-use/chrome" },
       {
         label: "ChatGPT Chrome extension",
-        url: "https://chromewebstore.google.com/detail/chatgpt/hehggadaopoacecdllhhajmbjkdcmajg?pli=1"
-      }
-    ]
+        url: "https://chromewebstore.google.com/detail/chatgpt/hehggadaopoacecdllhhajmbjkdcmajg?pli=1",
+      },
+    ],
   });
 });
 
@@ -144,16 +148,19 @@ test("agent browser recovery never exposes model-provided internal links", () =>
   const recovery = recoveryDiagnosticFromAgentText(
     "DRAWSY_BROWSER_UNAVAILABLE: Check `codex://settings/computer-use/chrome`; install https://chromewebstore.google.com/detail/chatgpt/hehggadaopoacecdllhhajmbjkdcmajg?pli=1`."
   );
-  assert.doesNotMatch(recovery?.message || "", /codex:|chromewebstore|\.codex|node_repl|cua_repl/);
+  assert.doesNotMatch(
+    recovery?.message || "",
+    /codex:|chromewebstore|\.codex|node_repl|cua_repl/
+  );
   assert.deepEqual(recovery?.links, [
     {
       label: "Chrome settings",
-      url: "codex://settings/computer-use/chrome"
+      url: "codex://settings/computer-use/chrome",
     },
     {
       label: "ChatGPT Chrome extension",
-      url: "https://chromewebstore.google.com/detail/chatgpt/hehggadaopoacecdllhhajmbjkdcmajg?pli=1"
-    }
+      url: "https://chromewebstore.google.com/detail/chatgpt/hehggadaopoacecdllhhajmbjkdcmajg?pli=1",
+    },
   ]);
 });
 
@@ -172,16 +179,16 @@ test("connector turns require exact, unexpired, matching grants", () => {
           connectionId: "google-one",
           capability: "mail",
           label: "gmail",
-          accountLabel: "person@example.com"
-        }
+          accountLabel: "person@example.com",
+        },
       ],
       grants: [
         {
           connectionId: "google-one",
           grant: "opaque.signed-grant",
-          expiresAt
-        }
-      ]
+          expiresAt,
+        },
+      ],
     }),
     {
       turnId: "turn-one",
@@ -190,16 +197,16 @@ test("connector turns require exact, unexpired, matching grants", () => {
           connectionId: "google-one",
           capability: "mail",
           label: "gmail",
-          accountLabel: "person@example.com"
-        }
+          accountLabel: "person@example.com",
+        },
       ],
       grants: [
         {
           connectionId: "google-one",
           grant: "opaque.signed-grant",
-          expiresAt
-        }
-      ]
+          expiresAt,
+        },
+      ],
     }
   );
   assert.equal(parseAgentConnectorTurn(undefined), null);
@@ -212,16 +219,16 @@ test("connector turns require exact, unexpired, matching grants", () => {
             connectionId: "google-one",
             capability: "mail",
             label: "gmail",
-            accountLabel: "person@example.com"
-          }
+            accountLabel: "person@example.com",
+          },
         ],
         grants: [
           {
             connectionId: "not-the-same-account",
             grant: "opaque.signed-grant",
-            expiresAt
-          }
-        ]
+            expiresAt,
+          },
+        ],
       }),
     /matching grant/
   );
@@ -234,16 +241,16 @@ test("connector turns require exact, unexpired, matching grants", () => {
             connectionId: "google-one",
             capability: "mail",
             label: "gmail",
-            accountLabel: "person@example.com"
-          }
+            accountLabel: "person@example.com",
+          },
         ],
         grants: [
           {
             connectionId: "google-one",
             grant: "opaque.signed-grant",
-            expiresAt: Date.now() - 1
-          }
-        ]
+            expiresAt: Date.now() - 1,
+          },
+        ],
       }),
     /expired/
   );
@@ -256,13 +263,13 @@ test("Drawsy resource turns require exact, unexpired grants", () => {
       turnId: "turn-one",
       resources: ["kanban", "jira"],
       grant: "opaque.signed-resource-grant",
-      expiresAt
+      expiresAt,
     }),
     {
       turnId: "turn-one",
       resources: ["kanban", "jira"],
       grant: "opaque.signed-resource-grant",
-      expiresAt
+      expiresAt,
     }
   );
   assert.equal(parseAgentResourceTurn(undefined), null);
@@ -272,7 +279,7 @@ test("Drawsy resource turns require exact, unexpired grants", () => {
         turnId: "turn-one",
         resources: ["kanban", "kanban"],
         grant: "opaque.signed-resource-grant",
-        expiresAt
+        expiresAt,
       }),
     /invalid or expired/
   );
@@ -282,7 +289,7 @@ test("canvas operations reject malformed and ambiguous input", () => {
   assert.deepEqual(parseCanvasOperations({}), {
     upsertElements: [],
     deleteElementIds: [],
-    files: []
+    files: [],
   });
   assert.throws(() => parseCanvasOperations({ upsertElements: {} }), /array/);
   assert.throws(
@@ -297,9 +304,9 @@ test("canvas operations reject malformed and ambiguous input", () => {
             id: "image-1",
             mimeType: "image/png",
             dataURL: "data:image/jpeg;base64,AA==",
-            created: Date.now()
-          }
-        ]
+            created: Date.now(),
+          },
+        ],
       }),
     /invalid canvas image asset/
   );
@@ -311,26 +318,26 @@ test("canvas context stays bounded and uses one targeting mode", () => {
     {
       elementIds: ["image-1"],
       includeSourceImages: true,
-      maxDimension: 2048
+      maxDimension: 2048,
     }
   );
   assert.deepEqual(
     parseCanvasContextRequest({
       bounds: { x: -20, y: 30, width: 800, height: 600 },
       includeSourceImages: false,
-      maxDimension: 4096
+      maxDimension: 4096,
     }),
     {
       bounds: { x: -20, y: 30, width: 800, height: 600 },
       includeSourceImages: false,
-      maxDimension: 4096
+      maxDimension: 4096,
     }
   );
   assert.throws(
     () =>
       parseCanvasContextRequest({
         elementIds: ["image-1"],
-        bounds: { x: 0, y: 0, width: 10, height: 10 }
+        bounds: { x: 0, y: 0, width: 10, height: 10 },
       }),
     /either elementIds or bounds/
   );
@@ -343,7 +350,7 @@ test("canvas context stays bounded and uses one targeting mode", () => {
       parseCanvasContextReference({
         id: "not-a-session-capture",
         elementIds: [],
-        bounds: { x: 0, y: 0, width: 10, height: 10 }
+        bounds: { x: 0, y: 0, width: 10, height: 10 },
       }),
     /reference is invalid/
   );
@@ -358,7 +365,7 @@ const freePort = () =>
       const port = typeof address === "object" && address ? address.port : 0;
       server.close((error) => (error ? reject(error) : resolve(port)));
     });
-});
+  });
 
 test("bridge uses an application-provided folder picker", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "drawsy-folder-picker-test-"));
@@ -372,15 +379,15 @@ test("bridge uses an application-provided folder picker", async () => {
     allowedOrigins: [origin],
     folderPicker: async () => ({
       path: selectedFolder,
-      name: "workspace"
-    })
+      name: "workspace",
+    }),
   });
 
   try {
     await bridge.listen();
     const response = await fetch(`${bridge.address}/v1/folders/pick`, {
       method: "POST",
-      headers: { origin }
+      headers: { origin },
     });
     assert.equal(response.status, 200);
     const picked = (await response.json()) as {
@@ -401,13 +408,13 @@ test("live previews stay on loopback and use bounded geometry", () => {
       url: "http://0.0.0.0:5173/app#state",
       title: "Local app",
       width: 960,
-      height: 640
+      height: 640,
     }),
     {
       url: "http://127.0.0.1:5173/app",
       title: "Local app",
       width: 960,
-      height: 640
+      height: 640,
     }
   );
   assert.throws(
@@ -418,7 +425,7 @@ test("live previews stay on loopback and use bounded geometry", () => {
     () =>
       parseLivePreviewRequest({
         url: "http://localhost:5173",
-        width: 100
+        width: 100,
       }),
     /placement/
   );
@@ -434,6 +441,7 @@ test("bridge keeps Codex controls inside the selected-folder boundary", async ()
     "scripts",
     "browser-client.mjs"
   );
+  const chromeIcon = path.join(chromePluginRoot, "assets", "icon.svg");
   const fakeCodexScript = path.join(root, "fake-codex.mjs");
   const fakeCodex =
     process.platform === "win32"
@@ -442,7 +450,15 @@ test("bridge keeps Codex controls inside the selected-folder boundary", async ()
   const generatedImage = path.join(root, "generated-raccoon.png");
   await mkdir(selectedFolder);
   await mkdir(path.dirname(chromeBrowserClient), { recursive: true });
-  await writeFile(chromeBrowserClient, "export const setupBrowserRuntime = () => {};\n");
+  await mkdir(path.dirname(chromeIcon), { recursive: true });
+  await writeFile(
+    chromeBrowserClient,
+    "export const setupBrowserRuntime = () => {};\n"
+  );
+  await writeFile(
+    chromeIcon,
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7"/></svg>'
+  );
   await writeFile(
     path.join(selectedFolder, "DRAW.md"),
     "# System map\n\n```mermaid\nflowchart LR\n  Web --> API\n```\n"
@@ -517,7 +533,9 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     { id: "browser@openai-bundled", name: "browser", installed: true, enabled: true, availability: "AVAILABLE", source: { type: "local", path: "/plugins/browser" }, interface: { displayName: "Browser", shortDescription: "Browser control", capabilities: ["browser"] } },
     { id: "chrome@vendor", name: "chrome", installed: true, enabled: true, availability: "AVAILABLE", source: { type: "local", path: ${JSON.stringify(
       chromePluginRoot
-    )} }, interface: { displayName: "Chrome", shortDescription: "Chrome control", capabilities: ["chrome"] } }
+    )} }, interface: { displayName: "Chrome", shortDescription: "Chrome control", capabilities: ["chrome"], composerIcon: ${JSON.stringify(
+      chromeIcon
+    )}, brandColor: "#85b3e0" } }
   ] }], marketplaceLoadErrors: [], featuredPluginIds: [] } });
   if (message.method === "mcpServerStatus/list") send({ id: message.id, result: { data: [
     { name: "drawsy", tools: { read_current_canvas: {}, apply_canvas_changes: {}, add_image_from_file: {}, capture_canvas_context: {}, replace_canvas_image_from_file: {}, list_connected_sources: {}, list_mail_messages: {}, list_calendars: {}, list_calendar_events: {}, list_drive_files: {}, list_github_repositories: {}, list_github_repository_contents: {}, list_github_issues: {}, list_github_pull_requests: {}, list_notion_content: {}, list_slack_channels: {}, list_slack_messages: {}, search_connected_source: {}, read_connected_item: {} }, authStatus: "unsupported" },
@@ -590,7 +608,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     DRAWSY_TEST_FOLDER: process.env.DRAWSY_TEST_FOLDER,
     DRAWSY_CODEX_BIN: process.env.DRAWSY_CODEX_BIN,
     DRAWSY_TEST_REQUEST_LOG: process.env.DRAWSY_TEST_REQUEST_LOG,
-    DRAWSY_LOCAL_STATE_DIR: process.env.DRAWSY_LOCAL_STATE_DIR
+    DRAWSY_LOCAL_STATE_DIR: process.env.DRAWSY_LOCAL_STATE_DIR,
   };
   process.env.NODE_ENV = "test";
   process.env.DRAWSY_TEST_FOLDER = selectedFolder;
@@ -604,7 +622,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     const headers = { origin, "content-type": "application/json" };
     const picked = (await fetch(`${bridge.address}/v1/folders/pick`, {
       method: "POST",
-      headers
+      headers,
     }).then((response) => response.json())) as {
       selectionId: string;
       name: string;
@@ -618,8 +636,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         headers: {
           origin,
           "access-control-request-method": "PUT",
-          "access-control-request-headers": "content-type"
-        }
+          "access-control-request-headers": "content-type",
+        },
       }
     );
     assert.equal(preferencesPreflight.status, 204);
@@ -629,7 +647,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     );
 
     const initialPreferences = await fetch(`${bridge.address}/v1/preferences`, {
-      headers: { origin }
+      headers: { origin },
     });
     assert.equal(initialPreferences.status, 200);
     assert.deepEqual((await initialPreferences.json()).preferences, {
@@ -639,16 +657,16 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         modelProvider: null,
         effort: null,
         accessMode: null,
-        internetEnabled: null
+        internetEnabled: null,
       },
       opencode: {
         model: null,
         modelProvider: null,
         effort: null,
         accessMode: null,
-        internetEnabled: null
+        internetEnabled: null,
       },
-      updatedAt: 0
+      updatedAt: 0,
     });
 
     const savedPreferences = await fetch(`${bridge.address}/v1/preferences`, {
@@ -661,19 +679,22 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
           modelProvider: "openai",
           effort: "high",
           accessMode: "workspace",
-          internetEnabled: false
+          internetEnabled: false,
         },
         opencode: {
           model: "open-model",
           modelProvider: "opencode",
           effort: null,
           accessMode: "readOnly",
-          internetEnabled: true
-        }
-      })
+          internetEnabled: true,
+        },
+      }),
     });
     assert.equal(savedPreferences.status, 200);
-    assert.equal((await savedPreferences.json()).preferences.engine, "opencode");
+    assert.equal(
+      (await savedPreferences.json()).preferences.engine,
+      "opencode"
+    );
 
     const drawDocumentResponse = await fetch(
       `${bridge.address}/v1/folders/${picked.selectionId}/draw-document`,
@@ -702,8 +723,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         canvasId: "canvas-1",
         canvasName: "Canvas 1",
         surfaceKind: "presentation",
-        conversationId
-      })
+        conversationId,
+      }),
     }).then((response) => response.json())) as {
       id: string;
       token: string;
@@ -720,8 +741,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         canvasId: "canvas-without-folder",
         canvasName: "Canvas without folder",
         surfaceKind: "canvas",
-        conversationId: "d2f0fdc4-49a6-44b4-bd15-58dd5b9b8a03"
-      })
+        conversationId: "d2f0fdc4-49a6-44b4-bd15-58dd5b9b8a03",
+      }),
     });
     assert.equal(privateCanvasResponse.status, 201);
     const privateCanvas = (await privateCanvasResponse.json()) as {
@@ -738,8 +759,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         method: "DELETE",
         headers: {
           origin,
-          authorization: `Bearer ${privateCanvas.token}`
-        }
+          authorization: `Bearer ${privateCanvas.token}`,
+        },
       }
     );
     assert.equal(closePrivateCanvasResponse.status, 204);
@@ -752,8 +773,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         body: JSON.stringify({
           surfaceKind: "neutral",
           surfaceName: "Connectors",
-          conversationId: "3be54c0f-d4f5-4d08-bd5e-6fdb6a042213"
-        })
+          conversationId: "3be54c0f-d4f5-4d08-bd5e-6fdb6a042213",
+        }),
       }
     );
     assert.equal(neutralWithoutFolderResponse.status, 400);
@@ -771,8 +792,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
           canvasId: "canvas-1",
           canvasName: "Canvas 1",
           surfaceKind: "presentation",
-          conversationId: "6a7460e7-f18e-4d34-9b1b-1eeceaf5c76f"
-        })
+          conversationId: "6a7460e7-f18e-4d34-9b1b-1eeceaf5c76f",
+        }),
       }
     );
     assert.equal(rememberedFolderResponse.status, 201);
@@ -790,8 +811,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         method: "DELETE",
         headers: {
           origin,
-          authorization: `Bearer ${rememberedFolder.token}`
-        }
+          authorization: `Bearer ${rememberedFolder.token}`,
+        },
       }
     );
     assert.equal(closeRememberedFolderResponse.status, 204);
@@ -816,8 +837,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         canvasId: "canvas-1",
         canvasName: "Canvas 1",
         surfaceKind: "presentation",
-        conversationId
-      })
+        conversationId,
+      }),
     });
     assert.equal(resumedSession.status, 200);
     const resumed = (await resumedSession.json()) as {
@@ -837,15 +858,15 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         canvasId: "canvas-2",
         canvasName: "Canvas 2",
         surfaceKind: "canvas",
-        conversationId
-      })
+        conversationId,
+      }),
     });
     assert.equal(conflictingResume.status, 409);
 
     const eventsResponse = await fetch(
       `${bridge.address}/v1/sessions/${session.id}/events`,
       {
-        headers: { origin, authorization: `Bearer ${session.token}` }
+        headers: { origin, authorization: `Bearer ${session.token}` },
       }
     );
     assert.equal(eventsResponse.status, 200);
@@ -857,7 +878,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       model: "gpt-test",
       modelProvider: "openai",
       reasoningEffort: "medium",
-      serviceTier: null
+      serviceTier: null,
     });
 
     const controlsResponse = await fetch(
@@ -870,7 +891,11 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       internetEnabled: boolean;
       models: Array<{ model: string }>;
       skills: Array<{ name: string; path: string }>;
-      plugins: Array<{ id: string }>;
+      plugins: Array<{
+        id: string;
+        iconUrl?: string;
+        brandColor?: string;
+      }>;
       mcpServers: Array<{ name: string; toolCount: number }>;
     };
     assert.deepEqual(
@@ -883,14 +908,16 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       name: "documents",
       displayName: "Documents",
       description: "Create documents",
-      path: "/plugins/documents/skills/documents/SKILL.md"
+      path: "/plugins/documents/skills/documents/SKILL.md",
     });
     assert.equal(
       controls.skills.some((skill) => skill.name === "control-chrome"),
       false
     );
     assert.equal(
-      controls.skills.some((skill) => skill.name === "drawsy-teaching-diagrams"),
+      controls.skills.some(
+        (skill) => skill.name === "drawsy-teaching-diagrams"
+      ),
       true
     );
     assert.equal(
@@ -902,15 +929,15 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     );
     assert.ok(bundledBrowserSkill);
     assert.equal(
-      path.normalize(bundledBrowserSkill.path).includes(
-        `${path.sep}.codex${path.sep}`
-      ),
+      path
+        .normalize(bundledBrowserSkill.path)
+        .includes(`${path.sep}.codex${path.sep}`),
       false
     );
     assert.equal(
-      path.normalize(bundledBrowserSkill.path).endsWith(
-        path.join("skills", "drawsy-browser-use", "SKILL.md")
-      ),
+      path
+        .normalize(bundledBrowserSkill.path)
+        .endsWith(path.join("skills", "drawsy-browser-use", "SKILL.md")),
       true
     );
     assert.equal(
@@ -919,13 +946,17 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     );
     assert.deepEqual(
       controls.plugins.map((plugin) => plugin.id),
-      [
-        "documents@openai-primary-runtime",
-        "chrome@vendor"
-      ]
+      ["documents@openai-primary-runtime", "chrome@vendor"]
     );
+    const chromePlugin = controls.plugins.find(
+      (plugin) => plugin.id === "chrome@vendor"
+    );
+    assert.ok(chromePlugin);
+    assert.match(chromePlugin.iconUrl || "", /^data:image\/svg\+xml;base64,/);
+    assert.equal(chromePlugin.iconUrl?.includes(chromeIcon), false);
+    assert.equal(chromePlugin.brandColor, "#85b3e0");
     assert.deepEqual(controls.mcpServers, [
-      { name: "drawsy", toolCount: 19, authStatus: "unsupported" }
+      { name: "drawsy", toolCount: 19, authStatus: "unsupported" },
     ]);
 
     const missingDrawTargetResponse = await fetch(
@@ -933,7 +964,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       {
         method: "POST",
         headers: { ...headers, authorization: `Bearer ${session.token}` },
-        body: JSON.stringify({ message: "draw this", drawMode: true })
+        body: JSON.stringify({ message: "draw this", drawMode: true }),
       }
     );
     assert.equal(missingDrawTargetResponse.status, 400);
@@ -950,8 +981,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         body: JSON.stringify({
           model: "gpt-next",
           effort: "high",
-          internetEnabled: false
-        })
+          internetEnabled: false,
+        }),
       }
     );
     assert.equal(settingsResponse.status, 200);
@@ -960,7 +991,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     const contextBytes = await readFile(generatedImage);
     for (const [role, assetId] of [
       ["preview", "selection"],
-      ["source", "source-1"]
+      ["source", "source-1"],
     ] as const) {
       const assetResponse = await fetch(
         `${bridge.address}/v1/sessions/${session.id}/context-assets/${contextId}/${role}/${assetId}`,
@@ -969,9 +1000,9 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
           headers: {
             origin,
             authorization: `Bearer ${session.token}`,
-            "content-type": "image/png"
+            "content-type": "image/png",
           },
-          body: contextBytes
+          body: contextBytes,
         }
       );
       assert.equal(assetResponse.status, 201);
@@ -987,16 +1018,16 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
           skills: [
             {
               name: "documents",
-              path: "/plugins/documents/skills/documents/SKILL.md"
-            }
+              path: "/plugins/documents/skills/documents/SKILL.md",
+            },
           ],
           plugins: [{ name: "Documents", path: "/plugins/documents" }],
           contexts: [
             {
               id: contextId,
               elementIds: ["image-1", "note-1"],
-              bounds: { x: 10, y: 20, width: 300, height: 240 }
-            }
+              bounds: { x: 10, y: 20, width: 300, height: 240 },
+            },
           ],
           connectors: {
             turnId: "connector-turn-one",
@@ -1005,18 +1036,18 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
                 connectionId: "google-one",
                 capability: "mail",
                 label: "gmail",
-                accountLabel: "person@example.com"
-              }
+                accountLabel: "person@example.com",
+              },
             ],
             grants: [
               {
                 connectionId: "google-one",
                 grant: "opaque.connector-grant",
-                expiresAt: Date.now() + 60_000
-              }
-            ]
-          }
-        })
+                expiresAt: Date.now() + 60_000,
+              },
+            ],
+          },
+        }),
       }
     );
     assert.equal(turnResponse.status, 202);
@@ -1053,7 +1084,10 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     assert.ok(finalImageEvent);
     const imageUrl = finalImageEvent.data.text.match(/\]\(([^)]+)\)/)?.[1];
     assert.ok(imageUrl);
-    assert.match(imageUrl, /\/v1\/sessions\/[^/]+\/attachments\/extension-image-1\?/);
+    assert.match(
+      imageUrl,
+      /\/v1\/sessions\/[^/]+\/attachments\/extension-image-1\?/
+    );
     const attachmentResponse = await fetch(imageUrl);
     assert.equal(attachmentResponse.status, 200);
     assert.equal(attachmentResponse.headers.get("content-type"), "image/png");
@@ -1079,8 +1113,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
           message: "hold",
           drawMode: true,
           drawsyTabId: "test-drawsy-tab-identity",
-          drawsyTabUrl: "http://localhost:3001/"
-        })
+          drawsyTabUrl: "http://localhost:3001/",
+        }),
       }
     );
     assert.equal(heldTurnResponse.status, 202);
@@ -1089,7 +1123,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       {
         method: "POST",
         headers: { ...headers, authorization: `Bearer ${session.token}` },
-        body: JSON.stringify({ message: "Keep the answer concise." })
+        body: JSON.stringify({ message: "Keep the answer concise." }),
       }
     );
     assert.equal(steerResponse.status, 202);
@@ -1105,7 +1139,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       {
         method: "POST",
         headers: { ...headers, authorization: `Bearer ${session.token}` },
-        body: JSON.stringify({ message: "hold" })
+        body: JSON.stringify({ message: "hold" }),
       }
     );
     assert.equal(secondHeldTurnResponse.status, 202);
@@ -1113,7 +1147,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       `${bridge.address}/v1/sessions/${session.id}/turns/interrupt`,
       {
         method: "POST",
-        headers: { ...headers, authorization: `Bearer ${session.token}` }
+        headers: { ...headers, authorization: `Bearer ${session.token}` },
       }
     );
     assert.equal(interruptResponse.status, 202);
@@ -1169,19 +1203,20 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       thread.params.config.plugins["browser@openai-bundled"].enabled,
       false
     );
-    assert.equal(
-      thread.params.config.plugins["chrome@vendor"].enabled,
-      true
-    );
+    assert.equal(thread.params.config.plugins["chrome@vendor"].enabled, true);
     assert.equal(
       thread.params.config.plugins["computer-use@openai-bundled"].enabled,
       false
     );
     assert.equal(
-      thread.params.config.plugins["unified-computer-use@openai-bundled"].enabled,
+      thread.params.config.plugins["unified-computer-use@openai-bundled"]
+        .enabled,
       false
     );
-    assert.equal(thread.params.config.mcp_servers["computer-use"].enabled, false);
+    assert.equal(
+      thread.params.config.mcp_servers["computer-use"].enabled,
+      false
+    );
     assert.equal(thread.params.config.mcp_servers.node_repl.enabled, true);
     assert.equal(
       thread.params.config.mcp_servers.node_repl.command,
@@ -1219,7 +1254,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       "move_kanban_card",
       "create_kanban_checklist_item",
       "update_kanban_checklist_item",
-      "link_current_canvas_to_kanban_card"
+      "link_current_canvas_to_kanban_card",
     ]) {
       assert.equal(
         thread.params.config.mcp_servers.drawsy.tools[tool].approval_mode,
@@ -1244,13 +1279,13 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       domains: {
         localhost: "allow",
         "127.0.0.1": "allow",
-        "::1": "allow"
+        "::1": "allow",
       },
-      allow_local_binding: true
+      allow_local_binding: true,
     });
     assert.equal(resumes[0].params.model, "gpt-next");
     assert.deepEqual(resumes[0].params.runtimeWorkspaceRoots, [
-      canonicalFolder
+      canonicalFolder,
     ]);
     const turnPages = log.filter(
       (message) => message.method === "thread/turns/list"
@@ -1265,7 +1300,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       writableRoots: [canonicalFolder],
       networkAccess: true,
       excludeTmpdirEnvVar: true,
-      excludeSlashTmp: true
+      excludeSlashTmp: true,
     });
     assert.equal(turn.params.environments, undefined);
     assert.equal(turn.params.input[0].type, "skill");
@@ -1280,7 +1315,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       ".drawsy",
       "context",
       session.id,
-      contextId
+      contextId,
     ]);
     assert.equal(previewPath.length, 5);
     assert.match(previewPath[4] ?? "", /^preview-selection-/);
@@ -1293,7 +1328,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       ".drawsy",
       "context",
       session.id,
-      contextId
+      contextId,
     ]);
     assert.equal(sourcePath.length, 5);
     assert.match(sourcePath[4] ?? "", /^source-source-1-/);
@@ -1305,8 +1340,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       {
         type: "text",
         text: "Inspect the folder.",
-        text_elements: []
-      }
+        text_elements: [],
+      },
     ]);
     const regularTurn = log
       .filter((message) => message.method === "turn/start")
@@ -1391,16 +1426,16 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         {
           type: "text",
           text: "Keep the answer concise.",
-          text_elements: []
-        }
-      ]
+          text_elements: [],
+        },
+      ],
     });
     const interruptRequest = log.find(
       (message) => message.method === "turn/interrupt"
     );
     assert.deepEqual(interruptRequest.params, {
       threadId: "thread-1",
-      turnId: "turn-hold"
+      turnId: "turn-hold",
     });
 
     const internalSecret =
@@ -1411,14 +1446,14 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         method: "POST",
         headers: {
           authorization: `Bearer ${internalSecret}`,
-          "content-type": "application/json"
+          "content-type": "application/json",
         },
         body: JSON.stringify({
           sourcePath: generatedImage,
           x: 40,
           y: 60,
-          maxWidth: 320
-        })
+          maxWidth: 320,
+        }),
       }
     );
     let canvasRequest: {
@@ -1447,7 +1482,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         x: canvasRequest.data.operations.upsertElements[0].x,
         y: canvasRequest.data.operations.upsertElements[0].y,
         width: canvasRequest.data.operations.upsertElements[0].width,
-        height: canvasRequest.data.operations.upsertElements[0].height
+        height: canvasRequest.data.operations.upsertElements[0].height,
       },
       { type: "image", x: 40, y: 60, width: 320, height: 320 }
     );
@@ -1457,13 +1492,13 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         method: "POST",
         headers: {
           ...headers,
-          authorization: `Bearer ${session.token}`
+          authorization: `Bearer ${session.token}`,
         },
         body: JSON.stringify({
           requestId: canvasRequest.data.requestId,
           ok: true,
-          data: { ok: true }
-        })
+          data: { ok: true },
+        }),
       }
     );
     assert.equal(canvasResponse.status, 200);
@@ -1472,7 +1507,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     assert.deepEqual(await imageResponse.json(), {
       elementId: canvasRequest.data.operations.upsertElements[0].id,
       width: 320,
-      height: 320
+      height: 320,
     });
 
     const previewRequest = fetch(
@@ -1481,12 +1516,12 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         method: "POST",
         headers: {
           authorization: `Bearer ${internalSecret}`,
-          "content-type": "application/json"
+          "content-type": "application/json",
         },
         body: JSON.stringify({
           url: "http://0.0.0.0:5173/app#local",
-          title: "Local app"
-        })
+          title: "Local app",
+        }),
       }
     );
     let previewEvent: {
@@ -1507,14 +1542,13 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         .map((line) => JSON.parse(line))
         .find(
           (value) =>
-            value.type === "canvas.request" &&
-            value.data?.action === "preview"
+            value.type === "canvas.request" && value.data?.action === "preview"
         );
       if (match) previewEvent = match;
     }
     assert.deepEqual(previewEvent.data.previewRequest, {
       url: "http://127.0.0.1:5173/app",
-      title: "Local app"
+      title: "Local app",
     });
     const previewCanvasResponse = await fetch(
       `${bridge.address}/v1/sessions/${session.id}/canvas-responses`,
@@ -1522,20 +1556,20 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         method: "POST",
         headers: {
           ...headers,
-          authorization: `Bearer ${session.token}`
+          authorization: `Bearer ${session.token}`,
         },
         body: JSON.stringify({
           requestId: previewEvent.data.requestId,
           ok: true,
-          data: { previewId: "preview-1" }
-        })
+          data: { previewId: "preview-1" },
+        }),
       }
     );
     assert.equal(previewCanvasResponse.status, 200);
     const previewResponse = await previewRequest;
     assert.equal(previewResponse.status, 200);
     assert.deepEqual(await previewResponse.json(), {
-      previewId: "preview-1"
+      previewId: "preview-1",
     });
 
     const neutralResponse = await fetch(`${bridge.address}/v1/sessions`, {
@@ -1545,8 +1579,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         selectionId: picked.selectionId,
         surfaceKind: "neutral",
         surfaceName: "Connectors",
-        conversationId: "648f1948-a92f-442b-a45d-e6c3e3b93e85"
-      })
+        conversationId: "648f1948-a92f-442b-a45d-e6c3e3b93e85",
+      }),
     });
     assert.equal(neutralResponse.status, 201);
     const neutralSession = (await neutralResponse.json()) as {
@@ -1559,8 +1593,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         method: "DELETE",
         headers: {
           origin,
-          authorization: `Bearer ${neutralSession.token}`
-        }
+          authorization: `Bearer ${neutralSession.token}`,
+        },
       }
     );
     assert.equal(closeNeutralResponse.status, 204);
@@ -1573,8 +1607,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         selectionId: picked.selectionId,
         surfaceKind: "neutral",
         surfaceName: "Connectors",
-        conversationId: generalConversationId
-      })
+        conversationId: generalConversationId,
+      }),
     }).then((response) => response.json())) as { id: string; token: string };
     const generalHistoryResponse = await fetch(
       `${bridge.address}/v1/conversations?scope=general`,
@@ -1594,8 +1628,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         surfaceKind: "kanban",
         surfaceId: "board-1",
         surfaceName: "Kanban",
-        conversationId: generalConversationId
-      })
+        conversationId: generalConversationId,
+      }),
     });
     assert.equal(movedGeneralResponse.status, 201);
     const movedGeneral = (await movedGeneralResponse.json()) as {
@@ -1610,13 +1644,13 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       {
         id: "prior-user",
         role: "user",
-        text: "find the launch plan."
+        text: "find the launch plan.",
       },
       {
         id: "prior-agent",
         role: "assistant",
-        text: "The launch plan has three phases."
-      }
+        text: "The launch plan has three phases.",
+      },
     ]);
     const paginatedHistoryLog = (await readFile(requestLog, "utf8"))
       .trim()
@@ -1633,7 +1667,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       {
         method: "POST",
         headers: { ...headers, authorization: `Bearer ${movedGeneral.token}` },
-        body: JSON.stringify({ message: "What should happen next?" })
+        body: JSON.stringify({ message: "What should happen next?" }),
       }
     );
     assert.equal(fallbackTurn.status, 202);
@@ -1648,7 +1682,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       `${bridge.address}/v1/sessions/${movedGeneral.id}`,
       {
         method: "DELETE",
-        headers: { origin, authorization: `Bearer ${movedGeneral.token}` }
+        headers: { origin, authorization: `Bearer ${movedGeneral.token}` },
       }
     );
     assert.equal(closeMovedGeneralResponse.status, 204);
@@ -1660,22 +1694,21 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         .map((line) => JSON.parse(line))
         .filter((message) => message.method === "thread/start").length;
     const startsBeforeConcurrentResume = await threadStartCount();
-    const concurrentConversationId =
-      "690811eb-51c1-4c03-827d-da1721e0ea1e";
+    const concurrentConversationId = "690811eb-51c1-4c03-827d-da1721e0ea1e";
     const concurrentInput = JSON.stringify({
       selectionId: picked.selectionId,
       canvasId: "canvas-concurrent",
       canvasName: "Concurrent canvas",
       surfaceKind: "canvas",
       conversationId: concurrentConversationId,
-      clientId: "5b36db28-2712-4f20-960c-8ec880adbb41"
+      clientId: "5b36db28-2712-4f20-960c-8ec880adbb41",
     });
     const concurrentResponses = await Promise.all(
       [0, 1].map(() =>
         fetch(`${bridge.address}/v1/sessions`, {
           method: "POST",
           headers,
-          body: concurrentInput
+          body: concurrentInput,
         })
       )
     );
@@ -1701,8 +1734,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         canvasName: "Concurrent canvas",
         surfaceKind: "canvas",
         conversationId: concurrentConversationId,
-        clientId: "1196680d-a019-413f-af0d-5fa4f103e880"
-      })
+        clientId: "1196680d-a019-413f-af0d-5fa4f103e880",
+      }),
     });
     assert.equal(secondTabResponse.status, 409);
     assert.match(
@@ -1710,17 +1743,17 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       /already open in another tab/i
     );
     const currentConcurrentSession =
-      concurrentSessions[concurrentResponses.findIndex(
-        (response) => response.status === 200
-      )]!;
+      concurrentSessions[
+        concurrentResponses.findIndex((response) => response.status === 200)
+      ]!;
     const closeConcurrentResponse = await fetch(
       `${bridge.address}/v1/sessions/${currentConcurrentSession.id}`,
       {
         method: "DELETE",
         headers: {
           origin,
-          authorization: `Bearer ${currentConcurrentSession.token}`
-        }
+          authorization: `Bearer ${currentConcurrentSession.token}`,
+        },
       }
     );
     assert.equal(closeConcurrentResponse.status, 204);
@@ -1737,7 +1770,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       `${bridge.address}/v1/sessions/${session.id}`,
       {
         method: "DELETE",
-        headers: { origin, authorization: `Bearer ${session.token}` }
+        headers: { origin, authorization: `Bearer ${session.token}` },
       }
     );
     assert.equal(closeResponse.status, 204);
