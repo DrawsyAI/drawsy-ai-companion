@@ -11,7 +11,7 @@ Build an editable Drawsy canvas that explains an idea visually, not a collection
 - **Native objects** communicate precise structure: panels, repeated components, membranes, nodes, graphs, containers, and other geometry where alignment matters.
 - **Diagram marks** communicate relationships: arrows, lines, labels, callouts, sequence, cause-and-effect, and direction.
 
-Use a deliberate mix. Sloppiness belongs inside the freehand language; it must not make labels, panels, connectors, or repeated structures look accidental.
+Use a deliberate mix. Drawsy's hand-drawn native style and Excalifont are good starting points for new diagrams; use another style when the user, existing canvas, or subject calls for it. Keep labels, panels, connectors, and repeated structures readable and intentional at any roughness.
 
 ## Workflow
 
