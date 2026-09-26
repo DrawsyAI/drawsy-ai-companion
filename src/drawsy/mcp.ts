@@ -43,6 +43,9 @@ if (
 const callBridge = async (
   action:
     | "read"
+    | "capabilities"
+    | "connector"
+    | "label"
     | "apply"
     | "inspect"
     | "image"
@@ -270,6 +273,77 @@ if (surfaceKind === "canvas" || surfaceKind === "presentation") {
   );
 
   server.registerTool(
+    "get_canvas_capabilities",
+    {
+      description:
+        "Read the shapes, connector routes, presentation capabilities, and current picker palette supported by this attached Drawsy canvas. Palette swatches include stored and rendered colors so a blank canvas can still be styled for its active theme. Use this when choosing native elements or colors; it does not prescribe a visual style.",
+      inputSchema: z.object({}),
+      annotations: { readOnlyHint: true, destructiveHint: false }
+    },
+    async () => ({
+      content: [{ type: "text", text: await callBridge("capabilities") }]
+    })
+  );
+
+  server.registerTool(
+    "create_or_update_connector",
+    {
+      description:
+        "Create or update a native arrow bound to source and target elements. Bound arrows follow moved or resized elements. Choose a route for this relationship; omit it to let Drawsy choose. Optional waypoints guide the route. Read the canvas to obtain IDs, then inspect the result.",
+      inputSchema: z.object({
+        sourceId: z.string().trim().min(1).max(128),
+        targetId: z.string().trim().min(1).max(128),
+        arrowId: z.string().trim().min(1).max(128).optional(),
+        route: z.enum(["straight", "rounded", "elbow", "auto"]).optional(),
+        waypoints: z
+          .array(z.tuple([
+            z.number().finite().min(-1_000_000).max(1_000_000),
+            z.number().finite().min(-1_000_000).max(1_000_000)
+          ]))
+          .max(16)
+          .optional()
+      }).refine((value) => value.sourceId !== value.targetId, {
+        message: "Source and target must differ."
+      }),
+      annotations: { readOnlyHint: false, destructiveHint: false }
+    },
+    async (input) => {
+      try {
+        return { content: [{ type: "text", text: await callBridge("connector", input) }] };
+      } catch (error) {
+        return { isError: true, content: [{ type: "text", text: error instanceof Error ? error.message : "Connector could not be created." }] };
+      }
+    }
+  );
+
+  server.registerTool(
+    "set_container_label",
+    {
+      description:
+        "Create or update native text bound to a container, with measured geometry so it is legible without entering text edit mode. Omitted style values inherit the current canvas or existing label choices.",
+      inputSchema: z.object({
+        containerId: z.string().trim().min(1).max(128),
+        text: z.string().min(1).max(20_000),
+        style: z.object({
+          fontSize: z.number().finite().min(1).max(256).optional(),
+          fontFamily: z.number().int().min(1).max(100).optional(),
+          strokeColor: z.string().min(1).max(128).optional(),
+          textAlign: z.enum(["left", "center", "right"]).optional(),
+          verticalAlign: z.enum(["top", "middle", "bottom"]).optional()
+        }).optional()
+      }),
+      annotations: { readOnlyHint: false, destructiveHint: false }
+    },
+    async (input) => {
+      try {
+        return { content: [{ type: "text", text: await callBridge("label", input) }] };
+      } catch (error) {
+        return { isError: true, content: [{ type: "text", text: error instanceof Error ? error.message : "Container label could not be set." }] };
+      }
+    }
+  );
+
+  server.registerTool(
     "apply_canvas_changes",
     {
       description:
@@ -332,7 +406,7 @@ if (surfaceKind === "canvas" || surfaceKind === "presentation") {
     "inspect_current_canvas_layout",
     {
       description:
-        "Inspect the rendered current canvas for potential geometry problems: text that overflows or is not bound to its container, overlapping diagram nodes, and connectors crossing unrelated nodes. This is advisory visual evidence, not an automatic rewrite. Use it after visual passes and resolve the relevant findings before claiming a diagram is complete.",
+        "Inspect the current canvas for missing or broken arrow bindings, crossings along arrow paths, clipped or crowded labels, node overlaps, and poor contrast using rendered colors. Findings include element IDs and are advisory visual evidence, not an automatic rewrite. Use it after visual passes and resolve relevant findings before claiming a diagram is complete.",
       inputSchema: z.object({}),
       annotations: { readOnlyHint: true, destructiveHint: false }
     },
