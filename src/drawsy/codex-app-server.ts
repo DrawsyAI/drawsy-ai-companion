@@ -90,6 +90,12 @@ const describeToolItem = (item: JsonObject): ActiveTool | null => {
     const drawsyMessages =
       item.tool === "read_current_canvas"
         ? { started: "Reading current canvas", completed: "Canvas read" }
+        : item.tool === "get_canvas_capabilities"
+        ? { started: "Checking canvas tools", completed: "Canvas tools ready" }
+        : item.tool === "create_or_update_connector"
+        ? { started: "Connecting canvas objects", completed: "Objects connected" }
+        : item.tool === "set_container_label"
+        ? { started: "Setting container label", completed: "Label set" }
         : item.tool === "apply_canvas_changes"
         ? { started: "Updating canvas", completed: "Canvas updated" }
         : item.tool === "inspect_current_canvas_layout"
@@ -662,9 +668,11 @@ export const getDeveloperInstructions = (
     surfaceKind === "canvas" || surfaceKind === "presentation"
       ? `
 - The Drawsy MCP is scoped to the single current ${surfaceKind}.
-- Read it before changing it. Use apply_canvas_changes for targeted upserts/deletions.
+- Read it before changing it. The snapshot includes the active theme/preset, rendered colors, selection, and existing relationships. Use get_canvas_capabilities when choosing available elements, routes, or picker swatches, including on a blank canvas. Draw style from the user's purpose and the actual canvas; do not impose a fixed palette or layout recipe.
+- Start new diagrams with Drawsy's native hand-drawn style: artist roughness (1) for shapes and arrows and Excalifont (fontFamily 5) for text. These are defaults, not requirements: honor the user's style, preserve existing styles when editing, and choose another style when it better serves the composition. Keep connections precise and text legible regardless of style.
+- Use create_or_update_connector for relationships that must follow moved or resized objects, and set_container_label for text inside a shape. Use apply_canvas_changes for other targeted upserts/deletions and unusual compositions.
 - For Draw mode, use the verified external-Chrome current-tab inspection and native pointer path for every requested visual gesture, including a shape-tool drag; do not first read or mutate the canvas through Drawsy MCP. Use MCP for explicitly structured/data-level or mixed work only.
-- Always apply canvas work progressively: call apply_canvas_changes as soon as each coherent change is ready, rather than waiting to submit the whole result at the end. A small edit can complete in one quick call; for a larger composition, keep adding structural anchors, connections, labels, and annotations in later targeted calls until it is complete. Each successful apply is immediately visible to the user. Re-read the live canvas whenever the rendered result informs the next placement, so never guess from a stale snapshot.
+- Apply canvas work progressively as coherent changes are ready. Each successful tool call is immediately visible to the user. Re-read the live canvas whenever the rendered result informs the next placement, so never guess from a stale snapshot.
 - After each visual pass, use inspect_current_canvas_layout. Treat its findings as rendered geometry evidence: repair relevant text, node-overlap, and connector-route issues in the next pass before continuing. It is advisory—retain a deliberate overlap only when the requested visual meaning requires it. Before declaring a visual result complete, inspect it once more. When an image-level check would clarify a finding, capture the relevant region and inspect that capture.
 - For a relationship-rich diagram, do one final rendered capture review after the geometry check. Bounds alone cannot tell whether a connector communicates the intended relationship: verify that each important connector has an intentional source and target, its label belongs to that relationship, the route is visually unambiguous, and labels remain readable against the active theme. Repair only findings relevant to the requested diagram; do not invent domain rules or alter deliberate visual choices.
 - Use Excalidraw-native text geometry. Text that belongs inside a shape must be bound to that container and fit within it; standalone labels must leave clear space around nearby nodes and connectors. Route arrows around unrelated nodes rather than through them.

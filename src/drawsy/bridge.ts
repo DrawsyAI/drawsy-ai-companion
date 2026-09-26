@@ -49,6 +49,8 @@ import {
   isRecord,
   parseCanvasContextReference,
   parseCanvasContextRequest,
+  parseCanvasConnectorRequest,
+  parseCanvasLabelRequest,
   parseCanvasImageRequest,
   parseLivePreviewRequest,
   parseCanvasOperations,
@@ -65,6 +67,8 @@ import {
   type BridgeEvent,
   type CanvasContextReference,
   type CanvasContextRequest,
+  type CanvasConnectorRequest,
+  type CanvasLabelRequest,
   type CanvasImageReplacement,
   type CanvasOperations,
   type LivePreviewRequest,
@@ -1165,6 +1169,9 @@ export const createDrawsyBridge = (
     session: Session,
     action:
       | "read"
+      | "capabilities"
+      | "connector"
+      | "label"
       | "apply"
       | "inspect"
       | "capture"
@@ -1172,6 +1179,8 @@ export const createDrawsyBridge = (
       | "preview",
     options: {
       operations?: CanvasOperations;
+      connectorRequest?: CanvasConnectorRequest;
+      labelRequest?: CanvasLabelRequest;
       contextRequest?: CanvasContextRequest;
       imageReplacement?: CanvasImageReplacement;
       previewRequest?: LivePreviewRequest;
@@ -1356,7 +1365,7 @@ export const createDrawsyBridge = (
       }
 
       const internalCanvas = url.pathname.match(
-        /^\/internal\/sessions\/([^/]+)\/canvas\/(read|apply|inspect|image|context|replace-image|preview)$/
+        /^\/internal\/sessions\/([^/]+)\/canvas\/(read|capabilities|connector|label|apply|inspect|image|context|replace-image|preview)$/
       );
       if (request.method === "POST" && internalCanvas) {
         const session = internalSession(
@@ -1367,6 +1376,9 @@ export const createDrawsyBridge = (
         if (!session) return;
         const action = internalCanvas[2] as
           | "read"
+          | "capabilities"
+          | "connector"
+          | "label"
           | "apply"
           | "inspect"
           | "image"
@@ -1408,6 +1420,10 @@ export const createDrawsyBridge = (
                 action,
                 action === "apply"
                   ? { operations: parseCanvasOperations(body) }
+                  : action === "connector"
+                    ? { connectorRequest: parseCanvasConnectorRequest(body) }
+                    : action === "label"
+                      ? { labelRequest: parseCanvasLabelRequest(body) }
                   : undefined
               );
         json(response, 200, result);

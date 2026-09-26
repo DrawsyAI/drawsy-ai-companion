@@ -115,7 +115,22 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       response.end(JSON.stringify({ canvasId: "canvas-1", elements: [] }));
       return;
     }
+    if (request.url?.endsWith("/capabilities")) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ routes: ["straight", "rounded", "elbow", "auto"] }));
+      return;
+    }
     for await (const chunk of request) appliedBody += chunk.toString();
+    if (request.url?.endsWith("/connector")) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ arrowId: "arrow-1" }));
+      return;
+    }
+    if (request.url?.endsWith("/label")) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ textId: "text-1" }));
+      return;
+    }
     if (request.url?.endsWith("/image")) {
       const body = JSON.parse(appliedBody);
       if (body.sourcePath === "../outside.png") {
@@ -197,6 +212,8 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       "capture_canvas_context",
       "create_kanban_card",
       "create_kanban_checklist_item",
+      "create_or_update_connector",
+      "get_canvas_capabilities",
       "inspect_current_canvas_layout",
       "link_current_canvas_to_kanban_card",
       "list_aws_cloudformation_stacks",
@@ -229,6 +246,7 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       "search_aws_resources",
       "search_connected_source",
       "search_jira_issues",
+      "set_container_label",
       "update_kanban_card",
       "update_kanban_checklist_item"
     ]);
@@ -260,6 +278,31 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       arguments: {}
     });
     assert.match(JSON.stringify(read.content), /canvas-1/);
+    const capabilities = await client.callTool({
+      name: "get_canvas_capabilities",
+      arguments: {}
+    });
+    assert.match(JSON.stringify(capabilities.content), /rounded/);
+    appliedBody = "";
+    const connector = await client.callTool({
+      name: "create_or_update_connector",
+      arguments: { sourceId: "node-1", targetId: "node-2", route: "elbow" }
+    });
+    assert.equal(connector.isError, undefined);
+    assert.deepEqual(JSON.parse(appliedBody), {
+      sourceId: "node-1", targetId: "node-2", route: "elbow"
+    });
+    assert.match(JSON.stringify(connector.content), /arrow-1/);
+    appliedBody = "";
+    const label = await client.callTool({
+      name: "set_container_label",
+      arguments: { containerId: "node-1", text: "A label" }
+    });
+    assert.equal(label.isError, undefined);
+    assert.deepEqual(JSON.parse(appliedBody), {
+      containerId: "node-1", text: "A label"
+    });
+    assert.match(JSON.stringify(label.content), /text-1/);
     const layout = await client.callTool({
       name: "inspect_current_canvas_layout",
       arguments: {}

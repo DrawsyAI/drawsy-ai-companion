@@ -26,6 +26,8 @@ import {
   parseAgentResourceTurn,
   parseCanvasContextReference,
   parseCanvasContextRequest,
+  parseCanvasConnectorRequest,
+  parseCanvasLabelRequest,
   parseCanvasOperations,
   parseDrawsyTabUrl,
   parseLivePreviewRequest,
@@ -66,12 +68,55 @@ test("canvas reads expose rendered semantics without changing raw elements", () 
 
   assert.equal(result.elements, rawElements);
   assert.deepEqual(result.renderSemantics, {
-    canvas: { theme: "dark", backgroundColor: "#121212" },
+    canvas: { theme: "dark", backgroundColor: "#121212", themePreset: "unknown" },
+    selection: [],
+    styles: { storedStrokeColors: [], storedBackgroundColors: [] },
+    relationships: [],
     elements: [
       { id: "cylinder-1", renderedType: "cylinder" },
       { id: "diamond-1", renderedType: "rounded diamond" },
     ],
   });
+});
+
+test("canvas read preserves app-provided rendered styles and relationships", () => {
+  const result = addCanvasRenderSemantics({
+    canvasId: "canvas-2",
+    elements: [{ id: "node-1", type: "rectangle" }],
+    renderContext: {
+      theme: "dark",
+      canvasBackgroundColor: "#ffffff",
+      renderedCanvasBackgroundColor: "#101010",
+      themePreset: "noir"
+    },
+    selection: { elementIds: ["node-1"] },
+    styleSummary: [{ strokeColor: "#111111", backgroundColor: "#dddddd", count: 1 }],
+    relationships: [{ arrowId: "arrow-1", sourceId: "node-1", targetId: "node-2" }]
+  }) as { renderSemantics: Record<string, unknown> };
+  assert.deepEqual(result.renderSemantics.canvas, {
+    theme: "dark", backgroundColor: "#101010", themePreset: "noir"
+  });
+  assert.deepEqual(result.renderSemantics.selection, ["node-1"]);
+  assert.deepEqual(result.renderSemantics.styles, {
+    rendered: [{ strokeColor: "#111111", backgroundColor: "#dddddd", count: 1 }]
+  });
+  assert.deepEqual(result.renderSemantics.relationships, [
+    { arrowId: "arrow-1", sourceId: "node-1", targetId: "node-2" }
+  ]);
+});
+
+test("canvas connector and label requests validate native operations", () => {
+  assert.deepEqual(parseCanvasConnectorRequest({
+    sourceId: "source", targetId: "target", route: "rounded", waypoints: [[1, 2]]
+  }), { sourceId: "source", targetId: "target", route: "rounded", waypoints: [[1, 2]] });
+  assert.throws(() => parseCanvasConnectorRequest({ sourceId: "same", targetId: "same" }), /invalid/);
+  assert.throws(() => parseCanvasConnectorRequest({ sourceId: "a", targetId: "b", route: "diagonal" }), /invalid/);
+  assert.throws(() => parseCanvasConnectorRequest({ sourceId: "a", targetId: "b", waypoints: Array.from({ length: 17 }, () => [0, 0]) }), /invalid/);
+  assert.deepEqual(parseCanvasLabelRequest({ containerId: "shape", text: "Label" }), {
+    containerId: "shape", text: "Label"
+  });
+  assert.throws(() => parseCanvasLabelRequest({ containerId: "shape", text: " " }), /invalid/);
+  assert.throws(() => parseCanvasLabelRequest({ containerId: "shape", text: "Label", style: { fontSize: 257 } }), /invalid/);
 });
 
 test("only visual canvas surfaces reserve live-preview capacity", () => {
@@ -1175,7 +1220,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     assert.match(thread.params.developerInstructions, /DRAW\.md/);
     assert.match(
       thread.params.developerInstructions,
-      /Always apply canvas work progressively/
+      /Apply canvas work progressively/
     );
     assert.match(
       thread.params.developerInstructions,
