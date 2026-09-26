@@ -63,8 +63,11 @@ Use it for an enclosed region after checking the boundary. If it fails, inspect 
 The current canvas-scoped MCP surface includes:
 
 - `read_current_canvas`: read the live attached canvas; it cannot read another canvas.
+- `get_canvas_capabilities`: inspect supported native elements, connector routes, and presentation components when a design choice needs them.
 - `apply_canvas_changes`: targeted element upserts and deletions, immediately visible; use progressive passes.
-- `inspect_current_canvas_layout`: advisory checks for `overlap`, `text_overflow`, `unbound_text`, and `connector_collision`.
+- `create_or_update_connector`: connect named source and target elements with native bindings; choose a straight, rounded, elbow, or automatic route when meaningful.
+- `set_container_label`: create or update native bound text and use the editor's font measurements.
+- `inspect_current_canvas_layout`: advisory checks for geometry, bindings, text fit, and rendered color contrast.
 - `capture_canvas_context`: capture by element ids or bounds, with `maxDimension` from 256 through 4096; bounds and element ids are mutually exclusive.
 - `attach_live_preview`: attach a local-only loopback preview with hot reload; it is not a saved/collaborative scene.
 - `add_image_from_file`: add an actual PNG, JPEG, GIF, or WebP from an exact current-workspace path, or the supported `imagegen://latest` source.
