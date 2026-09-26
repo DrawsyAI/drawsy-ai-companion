@@ -21,7 +21,13 @@ export type CanvasSnapshot = {
   renderContext?: {
     theme: "light" | "dark";
     canvasBackgroundColor: string;
+    themePreset?: string;
+    renderedCanvasBackgroundColor?: string;
+    renderedColors?: JsonObject;
   };
+  selection?: { elementIds: string[] };
+  styleSummary?: Array<{ strokeColor: string; backgroundColor: string; count: number }>;
+  relationships?: Array<{ arrowId: string; sourceId: string | null; targetId: string | null }>;
   appState?: JsonObject;
   files?: JsonObject;
 };
@@ -33,9 +39,37 @@ export type CanvasOperations = {
 };
 
 export type CanvasLayoutIssue = {
-  kind: "overlap" | "text_overflow" | "unbound_text" | "connector_collision";
+  kind:
+    | "overlap"
+    | "text_overflow"
+    | "unbound_text"
+    | "connector_collision"
+    | "missing_binding"
+    | "broken_binding"
+    | "crowded_label"
+    | "low_contrast";
   elementIds: string[];
   message: string;
+};
+
+export type CanvasConnectorRequest = {
+  sourceId: string;
+  targetId: string;
+  route?: "straight" | "rounded" | "elbow" | "auto";
+  waypoints?: [number, number][];
+  arrowId?: string;
+};
+
+export type CanvasLabelRequest = {
+  containerId: string;
+  text: string;
+  style?: {
+    fontSize?: number;
+    fontFamily?: number;
+    strokeColor?: string;
+    textAlign?: "left" | "center" | "right";
+    verticalAlign?: "top" | "middle" | "bottom";
+  };
 };
 
 export type CanvasLayoutReport = {
@@ -271,6 +305,9 @@ export type BridgeEvent =
         requestId: string;
         action:
           | "read"
+          | "capabilities"
+          | "connector"
+          | "label"
           | "apply"
           | "inspect"
           | "capture"
@@ -278,6 +315,8 @@ export type BridgeEvent =
           | "preview";
         canvasId: string;
         operations?: CanvasOperations;
+        connectorRequest?: CanvasConnectorRequest;
+        labelRequest?: CanvasLabelRequest;
         contextRequest?: CanvasContextRequest;
         imageReplacement?: CanvasImageReplacement;
         previewRequest?: LivePreviewRequest;
@@ -363,6 +402,32 @@ export const addCanvasRenderSemantics = (value: unknown): unknown => {
   const renderContext = isRecord(value.renderContext)
     ? value.renderContext
     : {};
+  const visibleElements = value.elements.filter(
+    (element): element is JsonObject =>
+      isRecord(element) &&
+      element.isDeleted !== true &&
+      typeof element.id === "string"
+  );
+  const appState = isRecord(value.appState) ? value.appState : {};
+  const selection = isRecord(value.selection) && Array.isArray(value.selection.elementIds)
+    ? value.selection.elementIds.filter((id): id is string => typeof id === "string")
+    : isRecord(appState.selectedElementIds)
+    ? Object.entries(appState.selectedElementIds)
+        .filter(([, selected]) => selected === true)
+        .map(([id]) => id)
+    : [];
+  const countColors = (key: "strokeColor" | "backgroundColor") => {
+    const counts = new Map<string, number>();
+    for (const element of visibleElements) {
+      const color = element[key];
+      if (typeof color === "string") {
+        counts.set(color, (counts.get(color) || 0) + 1);
+      }
+    }
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([color, count]) => ({ color, count }));
+  };
   return {
     ...value,
     renderSemantics: {
@@ -372,22 +437,40 @@ export const addCanvasRenderSemantics = (value: unknown): unknown => {
             ? renderContext.theme
             : "unknown",
         backgroundColor:
-          typeof renderContext.canvasBackgroundColor === "string"
-            ? renderContext.canvasBackgroundColor
+          typeof renderContext.renderedCanvasBackgroundColor === "string"
+            ? renderContext.renderedCanvasBackgroundColor
+            : typeof renderContext.canvasBackgroundColor === "string"
+              ? renderContext.canvasBackgroundColor
+              : "unknown",
+        themePreset:
+          typeof renderContext.themePreset === "string"
+            ? renderContext.themePreset
             : "unknown",
       },
-      elements: value.elements.flatMap((element) =>
-        isRecord(element) &&
-        element.isDeleted !== true &&
-        typeof element.id === "string"
-          ? [
-              {
-                id: element.id,
-                renderedType: renderedElementType(element),
-              },
-            ]
+      selection,
+      styles: Array.isArray(value.styleSummary)
+        ? { rendered: value.styleSummary }
+        : {
+            storedStrokeColors: countColors("strokeColor"),
+            storedBackgroundColors: countColors("backgroundColor")
+          },
+      relationships: Array.isArray(value.relationships) ? value.relationships : visibleElements.flatMap((element) =>
+        element.type === "arrow"
+          ? [{
+              arrowId: element.id,
+              sourceId: isRecord(element.startBinding)
+                ? element.startBinding.elementId ?? null
+                : null,
+              targetId: isRecord(element.endBinding)
+                ? element.endBinding.elementId ?? null
+                : null,
+            }]
           : []
       ),
+      elements: visibleElements.map((element) => ({
+        id: element.id,
+        renderedType: renderedElementType(element),
+      })),
     },
   };
 };
@@ -704,6 +787,67 @@ const parseElementIds = (value: unknown) => {
     throw new Error("Canvas context elementIds are invalid.");
   }
   return [...new Set(value.map((id) => (id as string).trim()))];
+};
+
+const canvasElementId = (value: unknown) =>
+  typeof value === "string" && value.trim().length > 0 && value.length <= 128;
+
+export const parseCanvasConnectorRequest = (
+  value: unknown
+): CanvasConnectorRequest => {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).some(
+      (key) => !["sourceId", "targetId", "route", "waypoints", "arrowId"].includes(key)
+    ) ||
+    !canvasElementId(value.sourceId) ||
+    !canvasElementId(value.targetId) ||
+    value.sourceId === value.targetId ||
+    (value.arrowId !== undefined && !canvasElementId(value.arrowId)) ||
+    (value.route !== undefined &&
+      !["straight", "rounded", "elbow", "auto"].includes(value.route as string)) ||
+    (value.waypoints !== undefined &&
+      (!Array.isArray(value.waypoints) ||
+        value.waypoints.length > 16 ||
+        value.waypoints.some(
+          (point) =>
+            !Array.isArray(point) ||
+            point.length !== 2 ||
+            !point.every((coordinate) => finiteWithin(coordinate, -1_000_000, 1_000_000))
+        )))
+  ) {
+    throw new Error("Canvas connector request is invalid.");
+  }
+  return value as CanvasConnectorRequest;
+};
+
+export const parseCanvasLabelRequest = (value: unknown): CanvasLabelRequest => {
+  const style = isRecord(value) ? value.style : undefined;
+  if (
+    !isRecord(value) ||
+    Object.keys(value).some((key) => !["containerId", "text", "style"].includes(key)) ||
+    !canvasElementId(value.containerId) ||
+    typeof value.text !== "string" ||
+    !value.text.trim() ||
+    value.text.length > 20_000 ||
+    (style !== undefined &&
+      (!isRecord(style) ||
+        Object.keys(style).some(
+          (key) =>
+            !["fontSize", "fontFamily", "strokeColor", "textAlign", "verticalAlign"].includes(key)
+        ) ||
+        (style.fontSize !== undefined && !finiteWithin(style.fontSize, 1, 256)) ||
+        (style.fontFamily !== undefined && !finiteWithin(style.fontFamily, 1, 100)) ||
+        (style.strokeColor !== undefined &&
+          (typeof style.strokeColor !== "string" || style.strokeColor.length > 128)) ||
+        (style.textAlign !== undefined &&
+          !["left", "center", "right"].includes(style.textAlign as string)) ||
+        (style.verticalAlign !== undefined &&
+          !["top", "middle", "bottom"].includes(style.verticalAlign as string))))
+  ) {
+    throw new Error("Canvas label request is invalid.");
+  }
+  return value as CanvasLabelRequest;
 };
 
 export const parseCanvasContextRequest = (
