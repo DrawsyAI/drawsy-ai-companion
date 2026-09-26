@@ -68,7 +68,7 @@ When the request is a diagram, identify four things before placing elements: the
 - use frames/groups for regions only when they communicate structure;
 - reserve freehand for anatomy, emphasis, texture, or the part the user explicitly wants hand-drawn.
 
-Do not scatter shapes and add arrows afterward. That produces a shape collage rather than diagram awareness. Do not turn an object or connector into freehand merely because Draw Mode is on.
+Keep the intended relationships in view while placing shapes and arrows. Choose the creation order that fits the canvas. Do not turn an object or connector into freehand merely because Draw Mode is on.
 
 ## 6. Choose the native tool deliberately
 
@@ -86,12 +86,13 @@ Bucket fill is appropriate only for a visibly enclosed region. If it fails, insp
 
 For a canvas or presentation, use the current surface's scoped MCP tools in this order:
 
-1. Read the current canvas before changing it.
-2. Apply only the targeted upserts or deletions required by the request.
-3. Apply in progressive passes so each pass is visible and can inform the next placement.
-4. Run `inspect_current_canvas_layout` after each visual pass. Treat it as advisory, but repair relevant overlaps, text overflow, unbound text, and connector collisions before completion.
-5. For relationship-heavy work, perform a final rendered capture review. Geometry bounds alone do not prove that a connector points to the intended node or that the visual reading order is clear.
-6. Re-read the canvas and confirm the final visible state.
+1. Read the current canvas before changing it. Use its current theme, rendered colors, selected elements, and existing visual language as context; do not assume a white canvas or a fixed palette.
+2. Inspect the available canvas capabilities when an unfamiliar Drawsy element or presentation component could serve the user's intent. Choose components for what they communicate, not because they appear in an example.
+3. Apply only the targeted changes required by the request. Use native connector and container-label tools for relationships and contained text; retain raw element edits for compositions those tools cannot express.
+4. Apply in progressive passes so each pass is visible and can inform the next placement.
+5. Run `inspect_current_canvas_layout` after each visual pass. Treat its findings as advisory evidence and repair relevant binding, collision, clipping, or contrast problems before completion. Deliberate free arrows and intentional overlaps may be valid.
+6. For relationship-heavy work, perform a final rendered capture review. Geometry bounds alone do not prove that a connector points to the intended node or that the visual reading order is clear.
+7. Re-read the canvas and confirm the final visible state.
 
 Use `capture_canvas_context` when scale, annotations, or editable source matter. Its `maxDimension` must be between 256 and 4096; use no more than 4096. Use `add_image_from_file` with an exact saved PNG/JPEG/GIF/WebP path inside the current workspace, or `imagegen://latest` when that is the supported source. Use `replace_canvas_image_from_file` when the existing image identity, geometry, bindings, or order should be preserved.
 

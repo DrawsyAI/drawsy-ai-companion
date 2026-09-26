@@ -31,7 +31,7 @@ Decide the teaching story before drawing:
 3. Which detail deserves an inset, graph, or close-up?
 4. What should the viewer read first, second, and last?
 
-Use a short title and, when useful, a one-line thesis or progression. Prefer one strong central illustration with a small number of purposeful detail regions over a grid of equally weighted boxes.
+Use a title or short explanation when it improves comprehension. Choose a central illustration, sequence, comparison, map, or another composition according to the subject and existing canvas.
 
 ### 3. Route each idea to the right visual language
 
@@ -59,22 +59,21 @@ Do not use a freehand stroke as a substitute for a precise connector when the re
 
 ### 4. Compose before detailing
 
-- Establish the outer frame or presentation area, title, reading direction, and major zones first.
-- Reserve the largest area for the main freehand subject. Reserve smaller, clearly separated areas for mechanism insets, graphs, or micro-structure.
-- Keep consistent visual hierarchy: the main subject has the strongest presence, connectors are quieter, labels are legible but subordinate, and detail insets are bounded.
-- Use a restrained semantic palette. Reuse a color for a role such as structure, signal, output, or annotation instead of assigning random colors to individual objects.
+- Establish the reading direction and major relationships; add framing only when it clarifies them.
+- Give space to the most important information, whether it is an illustration, graph, comparison, sequence, or detail.
+- Use hierarchy appropriate to the explanation. Make labels and connectors legible without forcing every diagram into the same visual arrangement.
+- Read the active theme and existing canvas colors. Choose colors that suit the subject and remain legible when rendered; reuse a color for a consistent meaning where that helps the explanation.
 - Leave enough negative space around the subject and labels for the diagram to read at a glance.
 
 ### 5. Build in passes
 
-Work in this order unless the canvas already has a strong structure:
+Build in passes that follow the dependencies of this particular explanation. Possible passes include:
 
-1. Add the frame/title and major empty regions.
-2. Draw the main freehand illustration with a few confident, readable strokes.
-3. Add only the native objects needed for precise structural detail.
-4. Add directional arrows and relationship lines after the endpoints exist.
-5. Add labels and short annotations close to their targets.
-6. Add a graph, waveform, inset, or final emphasis only if it teaches a real mechanism.
+- Place or refine the visual anchors that convey the subject.
+- Add native objects where editable structure helps.
+- Add relationship lines when their endpoints exist. Bind structural relationships to their source and target with native connectors; a deliberate free arrow may remain unbound.
+- Add labels and annotations near their referents. Bind text that belongs inside a shape to that shape.
+- Add a graph, waveform, inset, or emphasis where it contributes information.
 
 Inspect after each pass. Fix overlaps, unclear arrow landings, clipped text, and crowded regions before adding more detail. A detailed diagram is not one with more marks; it is one where each mark earns its place.
 
@@ -91,8 +90,8 @@ Inspect after each pass. Fix overlaps, unclear arrow landings, clipped text, and
 Before handing off, verify the rendered canvas—not only tool responses:
 
 - The main subject is recognizable without reading every label.
-- The reading order is obvious from layout and arrows.
-- Every arrow has a meaningful source and destination; remove floating or decorative arrows.
+- The intended reading order can be understood from the composition.
+- Relationship arrows have clear endpoints. Keep free or decorative arrows when they serve an intentional purpose.
 - Labels are close enough to their targets, do not overlap each other, and remain readable at the working zoom.
 - Freehand marks look intentional and organic, while native panels and repeated components remain aligned.
 - Color, stroke weight, and sloppiness are consistent within each visual language.
@@ -106,11 +105,7 @@ If the canvas interface exposes a deliverable or handoff marker, mark it only af
 
 ## Reusable composition patterns
 
-For a scientific or anatomy explanation, use a large freehand subject as the visual anchor, then add one or two native insets for micro-structure, a waveform or graph, and a synapse/mechanism close-up. Connect the stages with native arrows and short labels. This preserves the human sketch while making the difficult mechanism precise.
-
-For a process explanation, let the main subject or scene carry the freehand context. Use a limited number of native nodes or containers only where grouping or sequence truly needs precision. Add arrows after node placement and label the transformation at the point where it happens.
-
-For a presentation-style canvas, prefer one frame with clear hierarchy over many equal cards. Make the title, central subject, mechanism inset, and final takeaway visually distinct before adding decorative detail.
+Choose the composition from the explanation and the current canvas. A mechanism may need a central illustration, a process may need a sequence or loop, and a comparison may need parallel regions. Use Drawsy's available native shapes, frames, arrows, and presentation components when they clarify the idea. These are options, not templates; preserve a composition the user has already established.
 
 ## Avoid
 
