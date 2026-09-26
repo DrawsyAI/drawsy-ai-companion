@@ -255,7 +255,7 @@ if (surfaceKind === "canvas" || surfaceKind === "presentation") {
     "read_current_canvas",
     {
       description:
-        "Read the live Drawsy canvas attached to this chat. This tool is already scoped; it cannot read any other canvas.",
+        "Read the live Drawsy canvas attached to this chat. This tool is already scoped; it cannot read any other canvas. For new diagram elements, Drawsy's native starting style is artist roughness (1) and Excalifont text (fontFamily 5); follow the user's style request or the existing canvas when those call for something else.",
       inputSchema: z.object({}),
       annotations: { readOnlyHint: true, destructiveHint: false }
     },
@@ -320,7 +320,7 @@ if (surfaceKind === "canvas" || surfaceKind === "presentation") {
     "set_container_label",
     {
       description:
-        "Create or update native text bound to a container, with measured geometry so it is legible without entering text edit mode. Omitted style values inherit the current canvas or existing label choices.",
+        "Create or update native text bound to a container, with measured geometry so it is legible without entering text edit mode. New labels default to Excalifont (fontFamily 5); existing labels retain their font. Supply a different font when the user or composition calls for it.",
       inputSchema: z.object({
         containerId: z.string().trim().min(1).max(128),
         text: z.string().min(1).max(20_000),
@@ -347,7 +347,7 @@ if (surfaceKind === "canvas" || surfaceKind === "presentation") {
     "apply_canvas_changes",
     {
       description:
-        "Apply a targeted change to the attached Drawsy canvas. Read the canvas first. Every successful call is visible on the live canvas immediately, and omitted elements remain unchanged. Apply work progressively as soon as each coherent change is ready: a small edit can be one quick call; a larger result should continue through structural anchors, connections, labels, and annotations instead of waiting to submit the whole composition at the end. Read the canvas again whenever the rendered result informs the next placement.",
+        "Apply a targeted change to the attached Drawsy canvas. Read the canvas first. New shapes and arrows default to artist roughness (roughness 1), and new text defaults to Excalifont (fontFamily 5) when those fields are omitted; other styles remain available. Follow explicit user choices and the existing visual language. Every successful call is visible on the live canvas immediately, and omitted elements remain unchanged. Apply work progressively as soon as each coherent change is ready: a small edit can be one quick call; a larger result should continue through structural anchors, connections, labels, and annotations instead of waiting to submit the whole composition at the end. Read the canvas again whenever the rendered result informs the next placement.",
       inputSchema: z.object({
         upsertElements: z
           .array(z.record(z.string(), z.unknown()))
