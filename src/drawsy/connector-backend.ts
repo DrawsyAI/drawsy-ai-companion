@@ -6,15 +6,13 @@ const LOCAL_ORIGINS = new Set([
 ]);
 
 const HOSTED_ORIGINS = new Set([
-  "https://drawsyai.tech",
-  "https://beta.drawsyai.tech",
-  "https://drawsy.adarsh.rocks"
+  "https://drawsyai.com"
 ]);
 
 export const DEFAULT_LOCAL_CONNECTOR_BACKEND_URL =
   "http://127.0.0.1:3004";
 export const DEFAULT_HOSTED_CONNECTOR_BACKEND_URL =
-  "https://backend.adarsh.rocks";
+  "https://api.drawsyai.com";
 
 export type ConnectorBackendSource =
   | "configured"

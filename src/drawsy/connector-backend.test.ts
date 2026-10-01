@@ -25,9 +25,10 @@ test("connector routing selects the local backend for local Drawsy", () => {
 
 test("connector routing selects the hosted backend for public Drawsy", () => {
   const resolver = defaultResolver();
-  const result = resolver.resolve("https://drawsyai.tech");
+  const result = resolver.resolve("https://drawsyai.com");
 
   assert.equal(result.source, "hosted-default");
+  assert.equal(result.url?.origin, "https://api.drawsyai.com");
   assert.equal(
     result.url?.toString(),
     `${DEFAULT_HOSTED_CONNECTOR_BACKEND_URL}/`
@@ -42,12 +43,23 @@ test("connector routing stays disabled for an unknown origin", () => {
   assert.equal(result.url, null);
 });
 
+test("connector routing rejects lookalike and non-HTTPS public origins", () => {
+  const resolver = defaultResolver();
+  for (const origin of [
+    "http://drawsyai.com",
+    "https://drawsyai.com.untrusted.example",
+    "https://untrusted.drawsyai.com"
+  ]) {
+    assert.equal(resolver.resolve(origin).source, "disabled");
+  }
+});
+
 test("an explicit backend override is used for trusted deployments", () => {
   const resolver = createConnectorBackendResolver({
     configuredUrl: "http://localhost:3004"
   });
 
-  const result = resolver.resolve("https://drawsyai.tech");
+  const result = resolver.resolve("https://drawsyai.com");
 
   assert.equal(result.source, "configured");
   assert.equal(result.url?.toString(), "http://localhost:3004/");
@@ -83,6 +95,15 @@ test("bridge health reports the installed version and routing mode", async () =>
       version: "0.1.13",
       connectorRouting: "automatic local/hosted routing"
     });
+    const preflight = await fetch(`http://127.0.0.1:${port}/health`, {
+      method: "OPTIONS",
+      headers: { origin: "https://drawsyai.com" }
+    });
+    assert.equal(preflight.status, 204);
+    assert.equal(
+      preflight.headers.get("access-control-allow-origin"),
+      "https://drawsyai.com"
+    );
   } finally {
     await bridge.close();
   }

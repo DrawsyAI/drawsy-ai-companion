@@ -1,13 +1,13 @@
 {
   "name": "@drawsy/companion",
-  "version": "0.1.21",
+  "version": "0.1.22",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.11.0",
   "description": "Drawsy's local desktop companion, bridge, and surface-scoped MCP",
   "author": {
     "name": "Drawsy",
-    "email": "opensource@drawsyai.tech"
+    "email": "opensource@drawsyai.com"
   },
   "license": "MIT",
   "main": "dist/app/main.js",
