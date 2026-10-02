@@ -11,6 +11,12 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { createDrawsyBridge } from "../drawsy/bridge.js";
+import { loadDrawsyEnvironment } from "../drawsy/environment.js";
+
+const environmentMode = loadDrawsyEnvironment({
+  mode: app.isPackaged ? "production" : process.env.NODE_ENV ?? "development",
+  loadFile: !app.isPackaged
+});
 import { readLocalEngineStatus } from "../drawsy/engine-status.js";
 import { normalizeFolder } from "../drawsy/folder-picker.js";
 
@@ -94,6 +100,10 @@ if (!gotSingleInstanceLock) {
       : undefined;
   const bridge = createDrawsyBridge({
     host: "127.0.0.1",
+    allowedOrigins:
+      environmentMode === "production" && !process.env.DRAWSY_ALLOWED_ORIGINS
+        ? ["https://drawsyai.com"]
+        : undefined,
     folderPicker: nativeFolderPicker,
     version: app.getVersion()
   });

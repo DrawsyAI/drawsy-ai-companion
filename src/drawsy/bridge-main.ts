@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 
 import { createDrawsyBridge } from "./bridge.js";
+import { loadDrawsyEnvironment } from "./environment.js";
+
+const mode = loadDrawsyEnvironment();
 
 const bridge = createDrawsyBridge({
   host: process.env.HOST || "127.0.0.1"
