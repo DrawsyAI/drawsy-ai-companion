@@ -10,6 +10,8 @@ release-*/
 .vscode
 opencode.json
 
+
+# Environment files are operator-owned and never packaged.
 .env
 .env.*
-!.env.example
+EXPERIMENT.md
