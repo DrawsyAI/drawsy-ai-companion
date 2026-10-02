@@ -415,7 +415,9 @@ export const createDrawsyBridge = (
     options.allowedOrigins ??
       (
         process.env.DRAWSY_ALLOWED_ORIGINS ||
-        "http://localhost:3001,http://127.0.0.1:3001,https://drawsyai.com"
+        (process.env.NODE_ENV === "production"
+          ? "https://drawsyai.com"
+          : "http://localhost:3001,http://127.0.0.1:3001,https://drawsyai.com")
       )
         .split(",")
         .map((origin) => origin.trim())

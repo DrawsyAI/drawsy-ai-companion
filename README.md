@@ -160,3 +160,7 @@ Contributions must keep the local bridge loopback-only, preserve selected-folder
 ## License
 
 MIT. See [`LICENSE`](LICENSE).
+
+## Environment operation
+
+See [ENVIRONMENT.md](ENVIRONMENT.md) for explicit modes, local configuration, production boundaries, and verification rules.
