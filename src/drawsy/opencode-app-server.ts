@@ -5,7 +5,10 @@ import { createServer } from "node:net";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { getDeveloperInstructions } from "./codex-app-server.js";
+import {
+  getDeveloperInstructions,
+  loadBundledFastDiagramSkill
+} from "./codex-app-server.js";
 import { resolveOpenCodeBinary } from "./opencode-binary.js";
 import {
   drawsyMcpProcess,
@@ -406,6 +409,7 @@ export class OpenCodeAppServer {
   private currentModel: AvailableModel | null = null;
   private agentMetadata: AgentMetadata | null = null;
   private turnActive = false;
+  private generationMode: "fast" | "draw" = "draw";
   private closed = false;
   private lastProcessError = "";
   private resumeOpenCodeSessionId: string | null;
@@ -921,7 +925,9 @@ export class OpenCodeAppServer {
     connectors: AgentConnectorSource[] = [],
     resources: AiResourceId[] = [],
     drawMode = false,
-    _drawsyTabId?: string | null
+    _drawsyTabId?: string | null,
+    _drawsyTabUrl?: string | null,
+    generationMode: "fast" | "draw" = "draw"
   ) {
     if (!this.openCodeSessionId || !this.currentModel) {
       throw new Error("OpenCode is not ready.");
@@ -934,6 +940,15 @@ export class OpenCodeAppServer {
         "OpenCode starts in Drawsy's isolated mode and has no plugins."
       );
     }
+    const fastMode = generationMode === "fast";
+    const pointerDrawMode = drawMode && !fastMode;
+    const turnSkills = fastMode
+      ? tags.skills.filter((skill) => skill.name !== "drawsy-teaching-diagrams")
+      : tags.skills;
+    const fastSkillText = fastMode
+      ? await loadBundledFastDiagramSkill()
+      : null;
+    this.generationMode = generationMode;
     this.turnActive = true;
     this.emit({ type: "turn.status", data: { status: "inProgress" } });
     const parts: Array<JsonObject> = [];
@@ -964,10 +979,10 @@ export class OpenCodeAppServer {
         });
       }
     }
-    if (tags.skills.length) {
+    if (turnSkills.length) {
       parts.push({
         type: "text",
-        text: `The user selected these project skills: ${tags.skills
+        text: `The user selected these project skills: ${turnSkills
           .map((skill) => `${skill.name} (${skill.path})`)
           .join(
             ", "
@@ -997,10 +1012,16 @@ export class OpenCodeAppServer {
           )}. Use their dedicated Drawsy MCP tools only if naturally useful. Kanban changes must follow the user's request and existing board permissions; Jira remains read-only.`
       });
     }
-    if (drawMode) {
+    if (pointerDrawMode) {
       parts.push({
         type: "text",
         text: "Draw mode is ON for this turn. OpenCode has no native Browser/Chrome control in Drawsy Companion. Use Drawsy MCP for structured canvas work, and clearly say if the user asks for freehand current-tab input that is unavailable in this engine."
+      });
+    }
+    if (fastMode && fastSkillText) {
+      parts.push({
+        type: "text",
+        text: `Bundled Drawsy Fast diagrams skill:\n${fastSkillText}`
       });
     }
     parts.push({ type: "text", text: message });
@@ -1022,7 +1043,8 @@ export class OpenCodeAppServer {
             system: getDeveloperInstructions(
               this.session.surfaceKind,
               this.session.previewPort,
-              this.session.workspaceMode
+              this.session.workspaceMode,
+              generationMode
             ),
             parts
           })
@@ -1067,7 +1089,8 @@ export class OpenCodeAppServer {
           system: getDeveloperInstructions(
             this.session.surfaceKind,
             this.session.previewPort,
-            this.session.workspaceMode
+            this.session.workspaceMode,
+            this.generationMode
           ),
           parts: [{ type: "text", text: message }],
           delivery: "steer"

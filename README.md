@@ -56,6 +56,12 @@ The MCP is not a public HTTP service. It is launched for a local agent session, 
 
 The default companion path is local-only: selected folders, agent sessions, previews, and local conversation state remain on the device. Connector/resource grants are short-lived values issued by the Drawsy backend for one turn; the companion does not persist them or ship provider credentials. Release builds route trusted local Drawsy origins to `http://127.0.0.1:3004` and trusted hosted Drawsy origins to the configured public backend. Set `DRAWSY_CONNECTOR_BACKEND_URL` to override that routing for another deployment. Unknown browser origins remain unable to use connector/resource execution.
 
+### Fast diagrams
+
+Turns may specify `generationMode: "fast"` or `"draw"`; older clients default to Draw. `GET /v1/engines` advertises supported modes for client compatibility. Fast Mode uses diagram code to create whole diagrams while normal canvas management remains available: raw edits can update or delete existing elements, connectors and labels can target existing elements, and image, capture, and preview workflows remain supported. The bridge marks raw edits for live existing-ID validation. Fast Mode remains active after a turn ends until the user starts a Draw turn. The bundled Fast skill is loaded without the Draw teaching-diagram skill.
+
+Mermaid input is limited to 256 KiB UTF-8 and requires an `operationId`; `replaceOperationId` replaces only a prior converter-created group. The canvas capability response describes the installed converter's editable families and image fallback. The bridge enforces mode restrictions on internal canvas requests, so suppressing tools in the interface is not the security boundary.
+
 ## Scope
 
 ### Included

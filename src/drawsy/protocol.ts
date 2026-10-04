@@ -1,5 +1,6 @@
 export const MAX_BODY_BYTES = 12 * 1024 * 1024;
 export const MAX_CANVAS_ASSET_BYTES = 8 * 1024 * 1024;
+export const MAX_DIAGRAM_SOURCE_BYTES = 256 * 1024;
 export const CANVAS_REQUEST_TIMEOUT_MS = 60_000;
 
 export type JsonObject = Record<string, unknown>;
@@ -10,6 +11,14 @@ export type DrawsySurfaceKind =
   | "kanban"
   | "jira"
   | "neutral";
+
+export type GenerationMode = "fast" | "draw";
+
+export const parseGenerationMode = (value: unknown): GenerationMode => {
+  if (value === undefined || value === "draw") return "draw";
+  if (value === "fast") return "fast";
+  throw new Error("generationMode must be 'fast' or 'draw'.");
+};
 
 export const surfaceSupportsLivePreview = (surfaceKind: DrawsySurfaceKind) =>
   surfaceKind === "canvas" || surfaceKind === "presentation";
@@ -36,6 +45,7 @@ export type CanvasOperations = {
   upsertElements: unknown[];
   deleteElementIds: string[];
   files: CanvasFile[];
+  existingElementsOnly?: true;
 };
 
 export type CanvasLayoutIssue = {
@@ -70,6 +80,21 @@ export type CanvasLabelRequest = {
     textAlign?: "left" | "center" | "right";
     verticalAlign?: "top" | "middle" | "bottom";
   };
+};
+
+export type CanvasDiagramCodeRequest = {
+  format: "mermaid";
+  source: string;
+  operationId: string;
+  replaceOperationId?: string;
+};
+
+export type CanvasDiagramCodeResult = {
+  outputKind: "editable-vector" | "image-fallback";
+  diagramType: string;
+  elementCount: number;
+  elementIds: string[];
+  bounds: CanvasContextBounds;
 };
 
 export type CanvasLayoutReport = {
@@ -308,6 +333,7 @@ export type BridgeEvent =
           | "capabilities"
           | "connector"
           | "label"
+          | "diagram"
           | "apply"
           | "inspect"
           | "capture"
@@ -317,6 +343,7 @@ export type BridgeEvent =
         operations?: CanvasOperations;
         connectorRequest?: CanvasConnectorRequest;
         labelRequest?: CanvasLabelRequest;
+        diagramRequest?: CanvasDiagramCodeRequest;
         contextRequest?: CanvasContextRequest;
         imageReplacement?: CanvasImageReplacement;
         previewRequest?: LivePreviewRequest;
@@ -848,6 +875,40 @@ export const parseCanvasLabelRequest = (value: unknown): CanvasLabelRequest => {
     throw new Error("Canvas label request is invalid.");
   }
   return value as CanvasLabelRequest;
+};
+
+export const parseCanvasDiagramCodeRequest = (
+  value: unknown
+): CanvasDiagramCodeRequest => {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).some(
+      (key) =>
+        !["format", "source", "operationId", "replaceOperationId"].includes(
+          key
+        )
+    ) ||
+    value.format !== "mermaid" ||
+    typeof value.source !== "string" ||
+    !value.source.trim() ||
+    Buffer.byteLength(value.source, "utf8") > MAX_DIAGRAM_SOURCE_BYTES ||
+    typeof value.operationId !== "string" ||
+    !/^[A-Za-z0-9_-]{1,128}$/.test(value.operationId) ||
+    (value.replaceOperationId !== undefined &&
+      (typeof value.replaceOperationId !== "string" ||
+        !/^[A-Za-z0-9_-]{1,128}$/.test(value.replaceOperationId) ||
+        value.replaceOperationId === value.operationId))
+  ) {
+    throw new Error("Diagram code request is invalid or exceeds 256 KiB.");
+  }
+  return {
+    format: "mermaid",
+    source: value.source,
+    operationId: value.operationId,
+    ...(typeof value.replaceOperationId === "string"
+      ? { replaceOperationId: value.replaceOperationId }
+      : {})
+  };
 };
 
 export const parseCanvasContextRequest = (

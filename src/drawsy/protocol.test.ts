@@ -27,8 +27,11 @@ import {
   parseCanvasContextReference,
   parseCanvasContextRequest,
   parseCanvasConnectorRequest,
+  parseCanvasDiagramCodeRequest,
   parseCanvasLabelRequest,
   parseCanvasOperations,
+  parseGenerationMode,
+  MAX_DIAGRAM_SOURCE_BYTES,
   parseDrawsyTabUrl,
   parseLivePreviewRequest,
   surfaceSupportsLivePreview,
@@ -117,6 +120,66 @@ test("canvas connector and label requests validate native operations", () => {
   });
   assert.throws(() => parseCanvasLabelRequest({ containerId: "shape", text: " " }), /invalid/);
   assert.throws(() => parseCanvasLabelRequest({ containerId: "shape", text: "Label", style: { fontSize: 257 } }), /invalid/);
+});
+
+test("Fast Mode and diagram-code request parsing enforce the wire contract", () => {
+  assert.equal(parseGenerationMode(undefined), "draw");
+  assert.equal(parseGenerationMode("fast"), "fast");
+  assert.equal(parseGenerationMode("draw"), "draw");
+  assert.throws(() => parseGenerationMode("automatic"), /generationMode/);
+
+  const request = {
+    format: "mermaid",
+    source: "flowchart LR\n  User --> Canvas",
+    operationId: "fast-op_1",
+    replaceOperationId: "prior-op"
+  };
+  assert.deepEqual(parseCanvasDiagramCodeRequest(request), request);
+  assert.deepEqual(
+    parseCanvasDiagramCodeRequest({
+      format: "mermaid",
+      source: "pie title Values\n  \"A\": 1",
+      operationId: "op-1"
+    }),
+    {
+      format: "mermaid",
+      source: "pie title Values\n  \"A\": 1",
+      operationId: "op-1"
+    }
+  );
+  assert.equal(
+    Buffer.byteLength("é".repeat(MAX_DIAGRAM_SOURCE_BYTES / 2), "utf8"),
+    MAX_DIAGRAM_SOURCE_BYTES
+  );
+  assert.doesNotThrow(() =>
+    parseCanvasDiagramCodeRequest({
+      format: "mermaid",
+      source: "é".repeat(MAX_DIAGRAM_SOURCE_BYTES / 2),
+      operationId: "max-source"
+    })
+  );
+  assert.throws(
+    () =>
+      parseCanvasDiagramCodeRequest({
+        format: "mermaid",
+        source: "é".repeat(MAX_DIAGRAM_SOURCE_BYTES / 2 + 1),
+        operationId: "too-large"
+      }),
+    /256 KiB/
+  );
+  assert.throws(
+    () =>
+      parseCanvasDiagramCodeRequest({ ...request, operationId: "same", replaceOperationId: "same" }),
+    /invalid/
+  );
+  assert.throws(
+    () => parseCanvasDiagramCodeRequest({ ...request, operationId: "bad/id" }),
+    /invalid/
+  );
+  assert.throws(
+    () => parseCanvasDiagramCodeRequest({ ...request, unexpected: true }),
+    /invalid/
+  );
 });
 
 test("only visual canvas surfaces reserve live-preview capacity", () => {
@@ -583,7 +646,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     )}, brandColor: "#85b3e0" } }
   ] }], marketplaceLoadErrors: [], featuredPluginIds: [] } });
   if (message.method === "mcpServerStatus/list") send({ id: message.id, result: { data: [
-    { name: "drawsy", tools: { read_current_canvas: {}, apply_canvas_changes: {}, add_image_from_file: {}, capture_canvas_context: {}, replace_canvas_image_from_file: {}, list_connected_sources: {}, list_mail_messages: {}, list_calendars: {}, list_calendar_events: {}, list_drive_files: {}, list_github_repositories: {}, list_github_repository_contents: {}, list_github_issues: {}, list_github_pull_requests: {}, list_notion_content: {}, list_slack_channels: {}, list_slack_messages: {}, search_connected_source: {}, read_connected_item: {} }, authStatus: "unsupported" },
+    { name: "drawsy", tools: { read_current_canvas: {}, apply_canvas_changes: {}, add_image_from_file: {}, capture_canvas_context: {}, replace_canvas_image_from_file: {}, list_connected_sources: {}, list_mail_messages: {}, list_calendars: {}, list_calendar_events: {}, list_drive_files: {}, list_github_repositories: {}, list_github_repository_contents: {}, list_github_issues: {}, list_github_pull_requests: {}, list_notion_content: {}, list_slack_channels: {}, list_slack_messages: {}, search_connected_source: {}, read_connected_item: {}, render_diagram_code: {} }, authStatus: "unsupported" },
     { name: "computer-use", tools: {}, authStatus: "unsupported" },
     { name: "cua_repl", tools: { screenshot: {}, click: {}, drag: {} }, authStatus: "unsupported" }
   ] } });
@@ -673,6 +736,15 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       name: string;
     };
     assert.equal(picked.name, "workspace");
+
+    const enginesResponse = await fetch(`${bridge.address}/v1/engines`, {
+      headers: { origin },
+    });
+    assert.equal(enginesResponse.status, 200);
+    assert.deepEqual(
+      (await enginesResponse.json()).generationModes,
+      ["draw", "fast"]
+    );
 
     const preferencesPreflight = await fetch(
       `${bridge.address}/v1/preferences`,
@@ -938,6 +1010,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       skills: Array<{ name: string; path: string }>;
       plugins: Array<{
         id: string;
+        name: string;
+        path: string;
         iconUrl?: string;
         brandColor?: string;
       }>;
@@ -963,6 +1037,10 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       controls.skills.some(
         (skill) => skill.name === "drawsy-teaching-diagrams"
       ),
+      true
+    );
+    assert.equal(
+      controls.skills.some((skill) => skill.name === "drawsy-fast-diagrams"),
       true
     );
     assert.equal(
@@ -1001,7 +1079,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     assert.equal(chromePlugin.iconUrl?.includes(chromeIcon), false);
     assert.equal(chromePlugin.brandColor, "#85b3e0");
     assert.deepEqual(controls.mcpServers, [
-      { name: "drawsy", toolCount: 19, authStatus: "unsupported" },
+      { name: "drawsy", toolCount: 20, authStatus: "unsupported" },
     ]);
 
     const missingDrawTargetResponse = await fetch(
@@ -1149,6 +1227,291 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         turnEvents.indexOf('"tool":"read_current_canvas"')
     );
 
+    const fastThreadStart = (await readFile(requestLog, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .find((message) => message.method === "thread/start");
+    const fastInternalSecret =
+      fastThreadStart.params.config.mcp_servers.drawsy.env
+        .DRAWSY_SESSION_SECRET;
+    const fastInternalHeaders = {
+      authorization: `Bearer ${fastInternalSecret}`,
+      "content-type": "application/json",
+    };
+    const nextCanvasRequest = async (
+      action: string,
+      request?: Promise<Response>
+    ) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const deadline = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`Timed out waiting for canvas action: ${action}`)),
+          5_000
+        );
+      });
+      const completedRequest = request?.then(async (response) => {
+        throw new Error(
+          `Canvas ${action} request returned before dispatch: ${response.status} ${await response.clone().text()}`
+        );
+      });
+      try {
+        while (true) {
+          const event = await Promise.race([
+            reader.read(),
+            deadline,
+            ...(completedRequest ? [completedRequest] : [])
+          ]);
+          assert.equal(event.done, false);
+          const match = new TextDecoder()
+            .decode(event.value)
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => JSON.parse(line))
+            .find(
+              (value) =>
+                value.type === "canvas.request" && value.data?.action === action
+            );
+          if (match) return match;
+        }
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    const slowApplyControl: { finish?: () => void } = {};
+    const slowApplyBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode(
+            '{"upsertElements":[],"deleteElementIds":[],"existingElementsOnly":false'
+          )
+        );
+        slowApplyControl.finish = () => {
+          controller.enqueue(new TextEncoder().encode("}"));
+          controller.close();
+        };
+      },
+    });
+    const slowApplyPromise = fetch(
+      `${bridge.address}/internal/sessions/${session.id}/canvas/apply`,
+      {
+        method: "POST",
+        headers: fastInternalHeaders,
+        body: slowApplyBody,
+        duplex: "half",
+      } as RequestInit & { duplex: "half" }
+    );
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    const fastHeldTurn = await fetch(
+      `${bridge.address}/v1/sessions/${session.id}/turns`,
+      {
+        method: "POST",
+        headers: { ...headers, authorization: `Bearer ${session.token}` },
+        body: JSON.stringify({
+          message: "hold",
+          generationMode: "fast",
+          plugins: [{ name: chromePlugin.name, path: chromePlugin.path }],
+        }),
+      }
+    );
+    assert.equal(fastHeldTurn.status, 202);
+    const fastTurnRequest = (await readFile(requestLog, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .find(
+        (message) =>
+          message.method === "turn/start" &&
+          message.params.input.at(-1)?.text === "hold"
+      );
+    assert.ok(fastTurnRequest);
+    assert.equal(
+      fastTurnRequest.params.input.some(
+        (item: { type?: string; name?: string }) =>
+          item.type === "mention" && item.name === chromePlugin.name
+      ),
+      false
+    );
+    const finishSlowApply = slowApplyControl.finish;
+    assert.ok(finishSlowApply);
+    finishSlowApply();
+    const lateApplyEvent = await nextCanvasRequest("apply", slowApplyPromise);
+    assert.equal(lateApplyEvent.data.operations.existingElementsOnly, true);
+    const lateApplyCanvasResponse = await fetch(
+      `${bridge.address}/v1/sessions/${session.id}/canvas-responses`,
+      {
+        method: "POST",
+        headers: { ...headers, authorization: `Bearer ${session.token}` },
+        body: JSON.stringify({
+          requestId: lateApplyEvent.data.requestId,
+          ok: true,
+          data: { ok: true },
+        }),
+      }
+    );
+    assert.equal(lateApplyCanvasResponse.status, 200);
+    const slowApplyResponse = await slowApplyPromise;
+    assert.equal(slowApplyResponse.status, 200);
+    assert.deepEqual(await slowApplyResponse.json(), { ok: true });
+
+    const overlappingTurn = await fetch(
+      `${bridge.address}/v1/sessions/${session.id}/turns`,
+      {
+        method: "POST",
+        headers: { ...headers, authorization: `Bearer ${session.token}` },
+        body: JSON.stringify({ message: "draw turn", generationMode: "draw" }),
+      }
+    );
+    assert.equal(overlappingTurn.status, 409);
+
+    const fastImageRequest = fetch(
+      `${bridge.address}/internal/sessions/${session.id}/canvas/image`,
+      {
+        method: "POST",
+        headers: fastInternalHeaders,
+        body: JSON.stringify({ sourcePath: generatedImage, x: 80, y: 100, maxWidth: 320 }),
+      }
+    );
+    const fastImageEvent = await nextCanvasRequest("apply", fastImageRequest);
+    assert.equal(fastImageEvent.data.operations.existingElementsOnly, undefined);
+    assert.equal(fastImageEvent.data.operations.upsertElements[0].type, "image");
+    const fastImageCanvasResponse = await fetch(
+      `${bridge.address}/v1/sessions/${session.id}/canvas-responses`,
+      {
+        method: "POST",
+        headers: { ...headers, authorization: `Bearer ${session.token}` },
+        body: JSON.stringify({
+          requestId: fastImageEvent.data.requestId,
+          ok: true,
+          data: { ok: true },
+        }),
+      }
+    );
+    assert.equal(fastImageCanvasResponse.status, 200);
+    const fastImageResponse = await fastImageRequest;
+    assert.equal(fastImageResponse.status, 200);
+
+    const fastPreviewRequest = fetch(
+      `${bridge.address}/internal/sessions/${session.id}/canvas/preview`,
+      {
+        method: "POST",
+        headers: fastInternalHeaders,
+        body: JSON.stringify({ url: "http://127.0.0.1:5173/" }),
+      }
+    );
+    const fastPreviewEvent = await nextCanvasRequest("preview", fastPreviewRequest);
+    const fastPreviewCanvasResponse = await fetch(
+      `${bridge.address}/v1/sessions/${session.id}/canvas-responses`,
+      {
+        method: "POST",
+        headers: { ...headers, authorization: `Bearer ${session.token}` },
+        body: JSON.stringify({
+          requestId: fastPreviewEvent.data.requestId,
+          ok: true,
+          data: { previewId: "fast-preview" },
+        }),
+      }
+    );
+    assert.equal(fastPreviewCanvasResponse.status, 200);
+    const fastPreviewResponse = await fastPreviewRequest;
+    assert.equal(fastPreviewResponse.status, 200);
+    assert.deepEqual(await fastPreviewResponse.json(), {
+      previewId: "fast-preview",
+    });
+
+    const interruptFast = await fetch(
+      `${bridge.address}/v1/sessions/${session.id}/turns/interrupt`,
+      {
+        method: "POST",
+        headers: { ...headers, authorization: `Bearer ${session.token}` },
+      }
+    );
+    assert.equal(interruptFast.status, 202);
+    let interruptedEvents = "";
+    while (!interruptedEvents.includes('"status":"interrupted"')) {
+      const event = await reader.read();
+      assert.equal(event.done, false);
+      interruptedEvents += new TextDecoder().decode(event.value);
+    }
+    const cleanupRequest = fetch(
+      `${bridge.address}/internal/sessions/${session.id}/canvas/apply`,
+      {
+        method: "POST",
+        headers: fastInternalHeaders,
+        body: JSON.stringify({
+          upsertElements: [],
+          deleteElementIds: ["failed-attempt-group"],
+        }),
+      }
+    );
+    const cleanupEvent = await nextCanvasRequest("apply", cleanupRequest);
+    assert.equal(cleanupEvent.data.operations.existingElementsOnly, true);
+    assert.deepEqual(cleanupEvent.data.operations.deleteElementIds, [
+      "failed-attempt-group",
+    ]);
+    const cleanupCanvasResponse = await fetch(
+      `${bridge.address}/v1/sessions/${session.id}/canvas-responses`,
+      {
+        method: "POST",
+        headers: { ...headers, authorization: `Bearer ${session.token}` },
+        body: JSON.stringify({
+          requestId: cleanupEvent.data.requestId,
+          ok: true,
+          data: { ok: true },
+        }),
+      }
+    );
+    assert.equal(cleanupCanvasResponse.status, 200);
+    const cleanupResponse = await cleanupRequest;
+    assert.equal(cleanupResponse.status, 200);
+    const submitDiagram = async (diagramRequest: Record<string, unknown>) => {
+      const requestPromise = fetch(
+        `${bridge.address}/internal/sessions/${session.id}/canvas/diagram`,
+        {
+          method: "POST",
+          headers: fastInternalHeaders,
+          body: JSON.stringify(diagramRequest),
+        }
+      );
+      const event = await nextCanvasRequest("diagram", requestPromise);
+      assert.deepEqual(event.data.diagramRequest, diagramRequest);
+      const result = {
+        outputKind: "editable-vector",
+        diagramType: "flowchart",
+        elementCount: 2,
+        elementIds: ["node-a", "node-b"],
+        bounds: { x: 40, y: 80, width: 400, height: 180 },
+      };
+      const response = await fetch(
+        `${bridge.address}/v1/sessions/${session.id}/canvas-responses`,
+        {
+          method: "POST",
+          headers: { ...headers, authorization: `Bearer ${session.token}` },
+          body: JSON.stringify({
+            requestId: event.data.requestId,
+            ok: true,
+            data: result,
+          }),
+        }
+      );
+      assert.equal(response.status, 200);
+      const requestResponse = await requestPromise;
+      assert.equal(requestResponse.status, 200);
+      assert.deepEqual(await requestResponse.json(), result);
+    };
+    await submitDiagram({
+      format: "mermaid",
+      source: "flowchart LR\n A --> B",
+      operationId: "fast-op-1",
+    });
+    await submitDiagram({
+      format: "mermaid",
+      source: "flowchart LR\n A --> C",
+      operationId: "fast-op-2",
+      replaceOperationId: "fast-op-1",
+    });
+
     const heldTurnResponse = await fetch(
       `${bridge.address}/v1/sessions/${session.id}/turns`,
       {
@@ -1156,6 +1519,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         headers: { ...headers, authorization: `Bearer ${session.token}` },
         body: JSON.stringify({
           message: "hold",
+          generationMode: "draw",
           drawMode: true,
           drawsyTabId: "test-drawsy-tab-identity",
           drawsyTabUrl: "http://localhost:3001/",
@@ -1163,6 +1527,26 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       }
     );
     assert.equal(heldTurnResponse.status, 202);
+    const resumedDrawTurn = (await readFile(requestLog, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .find(
+        (message) =>
+          message.method === "turn/start" &&
+          message.params.input.at(-1)?.text === "hold" &&
+          message.params.input.some(
+            (item: { text?: string }) =>
+              item.text?.startsWith("Draw mode is ON for this turn")
+          )
+      );
+    assert.ok(resumedDrawTurn);
+    const resumedDrawInstructions = resumedDrawTurn.params.input
+      .map((item: { text?: string }) => item.text || "")
+      .join("\n");
+    assert.match(resumedDrawInstructions, /Draw generation mode is ON for this turn/);
+    assert.match(resumedDrawInstructions, /Draw mode is ON for this turn/);
+    assert.doesNotMatch(resumedDrawInstructions, /Fast Mode is ON for this turn/);
     const steerResponse = await fetch(
       `${bridge.address}/v1/sessions/${session.id}/turns/steer`,
       {
@@ -1382,6 +1766,11 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     assert.match(turn.params.input[5].text, /not require a tool call/);
     assert.doesNotMatch(JSON.stringify(turn.params.input), /connector-grant/);
     assert.deepEqual(turn.params.input.slice(6), [
+      {
+        type: "text",
+        text: `Draw generation mode is ON for this turn. Fast Mode is off; normal structured canvas workflows are restored.\n- Use the user's requested canvas operation and the existing visual language. Artist roughness (1) for shapes/arrows and Excalifont (fontFamily 5) for text are adaptable defaults, not requirements.\n- This generation-mode selection does not itself enable native pointer drawing; that remains controlled separately for this turn.`,
+        text_elements: [],
+      },
       {
         type: "text",
         text: "Inspect the folder.",
