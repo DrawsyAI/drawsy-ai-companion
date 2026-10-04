@@ -7,6 +7,8 @@ import { z } from "zod/v4";
 import {
   addCanvasRenderSemantics,
   MAX_BODY_BYTES,
+  MAX_DIAGRAM_SOURCE_BYTES,
+  parseCanvasDiagramCodeRequest,
   parseCanvasOperations,
   type DrawsySurfaceKind
 } from "./protocol.js";
@@ -46,6 +48,7 @@ const callBridge = async (
     | "capabilities"
     | "connector"
     | "label"
+    | "diagram"
     | "apply"
     | "inspect"
     | "image"
@@ -66,7 +69,7 @@ const callBridge = async (
         "content-type": "application/json"
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(35_000)
+      signal: AbortSignal.timeout(action === "diagram" ? 65_000 : 35_000)
     }
   );
   const text = await response.text();
@@ -344,10 +347,56 @@ if (surfaceKind === "canvas" || surfaceKind === "presentation") {
   );
 
   server.registerTool(
+    "render_diagram_code",
+    {
+      description:
+        "Render semantic Mermaid source on the attached Drawsy canvas through its typed diagram converter. This is Fast Mode's code conversion operation and is also available to other MCP clients. Read the canvas and `get_canvas_capabilities` first. Use its `diagramCode` catalog as the converter support authority. Choose syntax and diagram family from the user's intent; keep source concise, preserve canvas context, and let the converter handle placement. The result reports outputKind, diagramType, elementCount, inserted elementIds, and bounds. Use replaceOperationId only to replace an earlier converter-created diagram group after inspection; do not target other canvas elements.",
+      inputSchema: z
+        .object({
+          format: z.literal("mermaid"),
+          source: z.string().min(1).max(MAX_DIAGRAM_SOURCE_BYTES),
+          operationId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
+          replaceOperationId: z
+            .string()
+            .regex(/^[A-Za-z0-9_-]{1,128}$/)
+            .optional()
+        })
+        .refine(
+          ({ operationId, replaceOperationId }) =>
+            replaceOperationId === undefined ||
+            replaceOperationId !== operationId,
+          { path: ["replaceOperationId"], message: "Use a new operationId for replacement." }
+        ),
+      annotations: { readOnlyHint: false, destructiveHint: false }
+    },
+    async (input) => {
+      try {
+        const request = parseCanvasDiagramCodeRequest(input);
+        return {
+          content: [{ type: "text", text: await callBridge("diagram", request) }]
+        };
+      } catch (error) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text:
+                error instanceof Error
+                  ? error.message
+                  : "Diagram code could not be rendered."
+            }
+          ]
+        };
+      }
+    }
+  );
+
+  server.registerTool(
     "apply_canvas_changes",
     {
       description:
-        "Apply a targeted change to the attached Drawsy canvas. Read the canvas first. New shapes and arrows default to artist roughness (roughness 1), and new text defaults to Excalifont (fontFamily 5) when those fields are omitted; other styles remain available. Follow explicit user choices and the existing visual language. Every successful call is visible on the live canvas immediately, and omitted elements remain unchanged. Apply work progressively as soon as each coherent change is ready: a small edit can be one quick call; a larger result should continue through structural anchors, connections, labels, and annotations instead of waiting to submit the whole composition at the end. Read the canvas again whenever the rendered result informs the next placement.",
+        "Apply a targeted change to the attached Drawsy canvas. Read the canvas first. New shapes and arrows default to artist roughness (roughness 1), and new text defaults to Excalifont (fontFamily 5) when those fields are omitted; other styles remain available. Follow explicit user choices and the existing visual language. In Fast Mode, use this tool to update or delete existing elements and clean up failed or intermediate work you created; upserts must reference live element IDs. Use render_diagram_code to create a whole diagram. Every successful call is visible on the live canvas immediately, and omitted elements remain unchanged. Apply work progressively as soon as each coherent change is ready: a small edit can be one quick call; a larger result should continue through structural anchors, connections, labels, and annotations instead of waiting to submit the whole composition at the end. Read the canvas again whenever the rendered result informs the next placement.",
       inputSchema: z.object({
         upsertElements: z
           .array(z.record(z.string(), z.unknown()))

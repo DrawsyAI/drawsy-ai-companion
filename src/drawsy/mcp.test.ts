@@ -242,6 +242,7 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       "read_current_canvas",
       "read_jira_issue",
       "read_kanban_board",
+      "render_diagram_code",
       "replace_canvas_image_from_file",
       "search_aws_resources",
       "search_connected_source",
