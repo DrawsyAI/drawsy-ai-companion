@@ -587,6 +587,10 @@ const nativeBrowserRecoveryDiagnostic = (
   };
 };
 
+const DRAW_GENERATION_INSTRUCTION = `Draw generation mode is ON for this turn. Fast Mode is off; normal structured canvas workflows are restored.
+- Use the user's requested canvas operation and the existing visual language. Artist roughness (1) for shapes/arrows and Excalifont (fontFamily 5) for text are adaptable defaults, not requirements.
+- This generation-mode selection does not itself enable native pointer drawing; that remains controlled separately for this turn.`;
+
 const DRAW_MODE_INSTRUCTION = `Draw mode is ON for this turn. It is a deliberate pointer-first mode for the current Drawsy tab, not a request to use every available tool.
 - Use the user's external Google Chrome tab through the native Chrome extension. Do not use Codex's in-app Browser, a custom drawer, a screenshot overlay, or a custom drawing wrapper.
 - For any user-visible canvas manipulation requested as a gesture—freehand, pencil, stroke, sketch, drag, drop, move, resize, click, select, or choosing a Drawsy tool and dragging a rectangle, ellipse, arrow, or line—operate the real Drawsy UI with native Chrome pointer/keyboard input. Do not translate a pointer request into Drawsy MCP object insertion.
@@ -598,6 +602,15 @@ const DRAW_MODE_INSTRUCTION = `Draw mode is ON for this turn. It is a deliberate
 - If native Chrome is unavailable, do not guess whether the cause is a profile, Incognito, extension, or settings issue. Return DRAWSY_BROWSER_UNAVAILABLE: with the observed diagnosis if one exists; otherwise say that native Chrome control was unavailable in this session. Do not expose skill paths or internal transport names. Include the official recovery URLs codex://settings/computer-use/chrome and https://chromewebstore.google.com/detail/chatgpt/hehggadaopoacecdllhhajmbjkdcmajg?pli=1.
 - Before any native action, make one bounded preflight across the connected Chrome extension instances exactly as specified below. Inspect only tabs whose URL exactly equals the calling Drawsy URL, then verify their Drawsy tab markers. If no single marker match exists after that bounded scan, stop immediately. Do not inspect unrelated tabs, run shell or unrelated discovery, retry a candidate, use Drawsy MCP, or substitute objects. Return a concise final beginning with DRAWSY_BROWSER_UNAVAILABLE: followed by the observed user-facing fix.
 - After a successful preflight, make one compact inspect -> act -> rendered verification pass. Never guess from a stale screenshot, choose the first matching tab, or rediscover the canvas through MCP before acting.`;
+
+export const FAST_MODE_INSTRUCTION = `Fast Mode is ON for this turn. Build diagrams through semantic Mermaid source and Drawsy's typed diagram converter.
+- Read the current canvas and call get_canvas_capabilities first. Treat diagramCode.nativeEditableTypes and sourceMaxBytes as the converter's runtime authority. Choose a diagram family from the user's intent and actual support; do not follow a fixed intent-to-family recipe or add a type/style picker. Preserve the existing canvas visual language and let the converter place content in clear canvas space.
+- Use render_diagram_code to create a whole diagram. Fast Mode still supports normal canvas management: use apply_canvas_changes to update existing elements or delete existing elements, including failed or intermediate work you created; never delete unrelated content. Use create_or_update_connector and set_container_label for objects that already exist, and image insertion/replacement, canvas capture, and live preview when requested. The runtime checks raw upserts against the live canvas; never use them to create new shapes or diagram structures.
+- Do not use native pointer gestures or another canvas path to bypass the diagram converter when creating a whole diagram. Keep canvas edits focused on the user's requested existing content and preserve its visual choices.
+- Preserve supplied facts and chart values. Never invent numerical data to force a chart; ask only when missing information is essential.
+- If conversion reports a syntax error, make one focused correction and retry. Reuse operationId only for the same unchanged request; use a new one when source changes.
+- Inspect returned result details and rendered canvas after conversion. A successful conversion confirms rendering, not semantic correctness; check for omissions, clipped or overlapping content, unreadable labels, and misleading relationships.
+- Explain when the request cannot be represented faithfully by the available converter. Use a supported alternative only when it preserves the requested meaning; do not claim unsupported source is an editable diagram.`;
 
 const NATIVE_CHROME_TARGET_INSTRUCTION = (
   drawsyTabId: string,
@@ -648,6 +661,7 @@ The calling Drawsy page URL is ${drawsyTabUrl}, and its opaque per-tab marker is
 const DEVELOPER_INSTRUCTIONS = `You are the local Drawsy agent.
 - Built-in filesystem, patch, and shell tools are available inside the current Drawsy workspace; use them naturally when the user asks to inspect, create, or update project files.
 - Installed skills and plugins are available. Native external Chrome control may be available through the user's local Codex installation and Companion session; Codex's in-app Browser and broad desktop Computer Use are disabled for this local path.
+- Each canvas turn includes an authoritative generationMode. In Fast Mode, create whole diagrams through render_diagram_code while normal canvas management remains available; the bridge restricts raw element upserts to existing elements. Draw mode keeps the normal canvas workflows.
 - Use native external Chrome only when the user asks to inspect or manipulate the current tab, or when Draw mode makes a real pointer gesture the appropriate operation. Draw mode must use the actual Drawsy UI and cursor pipeline, including tool selection and drag gestures; it must not turn those gestures into MCP objects. Use Drawsy MCP for structured/data-level canvas work when that is what the user asked for.
 - External apps are unavailable as general connectors. Connected sources exist only when the user attaches source tags to a turn; access them through Drawsy's read-only connected-source tools and never assume an unlisted source is available. Network access for ordinary tools is controlled by the current Drawsy session setting.
 - First-party Drawsy resources exist only when the current surface or an explicit @ tag attaches them to a turn. Use only the resources listed in that turn.
@@ -657,7 +671,8 @@ const DEVELOPER_INSTRUCTIONS = `You are the local Drawsy agent.
 export const getDeveloperInstructions = (
   surfaceKind: DrawsySurfaceKind,
   previewPort: number | null,
-  workspaceMode: "selected" | "private" = "selected"
+  workspaceMode: "selected" | "private" = "selected",
+  generationMode: "fast" | "draw" | "auto" = "auto"
 ) =>
   `${DEVELOPER_INSTRUCTIONS}
 - ${
@@ -669,17 +684,17 @@ export const getDeveloperInstructions = (
       ? `
 - The Drawsy MCP is scoped to the single current ${surfaceKind}.
 - Read it before changing it. The snapshot includes the active theme/preset, rendered colors, selection, and existing relationships. Use get_canvas_capabilities when choosing available elements, routes, or picker swatches, including on a blank canvas. Draw style from the user's purpose and the actual canvas; do not impose a fixed palette or layout recipe.
-- Start new diagrams with Drawsy's native hand-drawn style: artist roughness (1) for shapes and arrows and Excalifont (fontFamily 5) for text. These are defaults, not requirements: honor the user's style, preserve existing styles when editing, and choose another style when it better serves the composition. Keep connections precise and text legible regardless of style.
+${generationMode === "fast" ? FAST_MODE_INSTRUCTION : generationMode === "draw" ? `- Start new diagrams with Drawsy's native hand-drawn style: artist roughness (1) for shapes and arrows and Excalifont (fontFamily 5) for text. These are defaults, not requirements: honor the user's style, preserve existing styles when editing, and choose another style when it better serves the composition. Keep connections precise and text legible regardless of style.
 - Use create_or_update_connector for relationships that must follow moved or resized objects, and set_container_label for text inside a shape. Use apply_canvas_changes for other targeted upserts/deletions and unusual compositions.
 - For Draw mode, use the verified external-Chrome current-tab inspection and native pointer path for every requested visual gesture, including a shape-tool drag; do not first read or mutate the canvas through Drawsy MCP. Use MCP for explicitly structured/data-level or mixed work only.
-- Apply canvas work progressively as coherent changes are ready. Each successful tool call is immediately visible to the user. Re-read the live canvas whenever the rendered result informs the next placement, so never guess from a stale snapshot.
+- Apply canvas work progressively as coherent changes are ready. Each successful tool call is immediately visible to the user. Re-read the live canvas whenever the rendered result informs the next placement, so never guess from a stale snapshot.` : `- Follow the explicit generationMode for each canvas turn. In Draw mode, start new diagrams with artist roughness (1) for shapes and arrows and Excalifont (fontFamily 5) for text as adaptable defaults, then use the normal structured or pointer workflows that match the request. In Draw mode, use create_or_update_connector for relationships that must follow moved or resized objects, set_container_label for text inside a shape, and apply_canvas_changes for other targeted edits. Apply canvas work progressively as coherent changes are ready; re-read the live canvas whenever the result informs the next placement, so never guess from a stale snapshot. In Fast Mode, use render_diagram_code to create a whole diagram while normal canvas management remains available. Preserve canvas context and the user's visual choices in either mode.`}
 - After each visual pass, use inspect_current_canvas_layout. Treat its findings as rendered geometry evidence: repair relevant text, node-overlap, and connector-route issues in the next pass before continuing. It is advisory—retain a deliberate overlap only when the requested visual meaning requires it. Before declaring a visual result complete, inspect it once more. When an image-level check would clarify a finding, capture the relevant region and inspect that capture.
 - For a relationship-rich diagram, do one final rendered capture review after the geometry check. Bounds alone cannot tell whether a connector communicates the intended relationship: verify that each important connector has an intentional source and target, its label belongs to that relationship, the route is visually unambiguous, and labels remain readable against the active theme. Repair only findings relevant to the requested diagram; do not invent domain rules or alter deliberate visual choices.
 - Use Excalidraw-native text geometry. Text that belongs inside a shape must be bound to that container and fit within it; standalone labels must leave clear space around nearby nodes and connectors. Route arrows around unrelated nodes rather than through them.
 - When visual scale, layout, annotations, or an editable source matters, use capture_canvas_context. Its preview is the rendered region; its source-image paths are pristine originals.
-- For generated images, pass the generator's exact saved path directly to add_image_from_file; do not copy it. If no saved path is returned, use imagegen://latest. Never create a bare image placeholder.
-- For an edit of an existing image, use replace_canvas_image_from_file so its geometry and identity are preserved.
-- When the user asks to build or preview a local web app, start its development server inside the current Drawsy workspace${
+- In Draw mode, for generated images, pass the generator's exact saved path directly to add_image_from_file; do not copy it. If no saved path is returned, use imagegen://latest. Never create a bare image placeholder.
+- In Draw mode, for an edit of an existing image, use replace_canvas_image_from_file so its geometry and identity are preserved.
+- In Draw mode, when the user asks to build or preview a local web app, start its development server inside the current Drawsy workspace${
           previewPort
             ? ` on the session's assigned port ${previewPort} (also available as DRAWSY_PREVIEW_PORT)`
             : ""
@@ -706,8 +721,13 @@ export const getDeveloperInstructions = (
 const BUNDLED_SKILL_NAMES = new Set([
   "drawsy-browser-use",
   "drawsy-teaching-diagrams",
+  "drawsy-fast-diagrams",
 ]);
-const DRAW_MODE_BUNDLED_SKILL_NAMES = BUNDLED_SKILL_NAMES;
+const DRAW_MODE_BUNDLED_SKILL_NAMES = new Set([
+  "drawsy-browser-use",
+  "drawsy-teaching-diagrams",
+]);
+const FAST_MODE_BUNDLED_SKILL_NAMES = new Set(["drawsy-fast-diagrams"]);
 const NATIVE_CHROME_BUNDLED_SKILL_NAMES = new Set(["drawsy-browser-use"]);
 const NATIVE_CHROME_INTENT =
   /\b(current\s+tab|this\s+tab|current\s+page|this\s+page|chrome|browser)\b/i;
@@ -778,6 +798,14 @@ const bundledSkillRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../../skills"
 );
+
+export const loadBundledFastDiagramSkill = async () => {
+  const content = await readFile(
+    path.join(bundledSkillRoot, "drawsy-fast-diagrams", "SKILL.md"),
+    "utf8"
+  );
+  return content.replace(/^---\r?\n[\s\S]*?\r?\n---\s*/, "").trim();
+};
 
 const readFrontmatterValue = (frontmatter: string, key: string) => {
   const match = frontmatter.match(
@@ -1496,7 +1524,8 @@ export class CodexAppServer {
     resources: AiResourceId[] = [],
     drawMode = false,
     drawsyTabId?: string | null,
-    drawsyTabUrl?: string | null
+    drawsyTabUrl?: string | null,
+    generationMode: "fast" | "draw" = "draw"
   ) {
     if (!this.threadId || this.turnActive) {
       throw new Error(
@@ -1524,8 +1553,23 @@ export class CodexAppServer {
         throw new Error(`Plugin is not available: ${plugin.name}`);
       }
     }
+    const fastMode = generationMode === "fast";
+    const pointerDrawMode = drawMode && !fastMode;
+    const turnSkills = fastMode
+      ? tags.skills.filter(
+          (skill) =>
+            skill.name !== "drawsy-teaching-diagrams" &&
+            skill.name !== "drawsy-browser-use"
+        )
+      : tags.skills;
+    const turnPlugins = fastMode
+      ? tags.plugins.filter(
+          (plugin) =>
+            !blockedCapability(plugin.name) && !blockedCapability(plugin.path)
+        )
+      : tags.plugins;
     const nativeChromeRequested =
-      drawMode || NATIVE_CHROME_INTENT.test(message);
+      !fastMode && (pointerDrawMode || NATIVE_CHROME_INTENT.test(message));
     const preferredNativeChromePlugin = nativeChromeRequested
       ? controls.plugins.find(
           (plugin) => plugin.id === this.nativeChromePluginId
@@ -1554,12 +1598,14 @@ export class CodexAppServer {
           );
         })
       : [];
-    if (drawMode && !this.nativeChromeAvailable) {
+    if (pointerDrawMode && !this.nativeChromeAvailable) {
       throw new Error(
         `DRAWSY_BROWSER_UNAVAILABLE: ${nativeBrowserRecoveryMessage()}`
       );
     }
-    const bundledTurnSkillNames = drawMode
+    const bundledTurnSkillNames = fastMode
+      ? FAST_MODE_BUNDLED_SKILL_NAMES
+      : pointerDrawMode
       ? DRAW_MODE_BUNDLED_SKILL_NAMES
       : nativeChromeRequested
       ? NATIVE_CHROME_BUNDLED_SKILL_NAMES
@@ -1568,7 +1614,7 @@ export class CodexAppServer {
       ? controls.skills.filter(
           (skill) =>
             bundledTurnSkillNames.has(skill.name) &&
-            !tags.skills.some(
+              !turnSkills.some(
               (selected) =>
                 selected.name === skill.name && selected.path === skill.path
             )
@@ -1576,7 +1622,7 @@ export class CodexAppServer {
       : [];
     this.turnActive = true;
     this.activeTurnId = null;
-    this.activeDrawMode = drawMode;
+    this.activeDrawMode = pointerDrawMode;
     this.nativeBrowserFailureInterruptSent = false;
     try {
       const result = (await this.request("turn/start", {
@@ -1586,8 +1632,8 @@ export class CodexAppServer {
         runtimeWorkspaceRoots: [this.folderPath],
         approvalPolicy: "never",
         input: [
-          ...tags.skills.map((skill) => ({ type: "skill", ...skill })),
-          ...tags.plugins.map((plugin) => ({ type: "mention", ...plugin })),
+          ...turnSkills.map((skill) => ({ type: "skill", ...skill })),
+          ...turnPlugins.map((plugin) => ({ type: "mention", ...plugin })),
           ...nativeDrawPlugins.map((plugin) => ({
             type: "mention",
             ...plugin,
@@ -1650,8 +1696,14 @@ export class CodexAppServer {
                 },
               ]
             : []),
-          ...(drawMode
+          ...(generationMode === "draw"
+            ? [{ type: "text", text: DRAW_GENERATION_INSTRUCTION, text_elements: [] }]
+            : []),
+          ...(pointerDrawMode
             ? [{ type: "text", text: DRAW_MODE_INSTRUCTION, text_elements: [] }]
+            : []),
+          ...(fastMode
+            ? [{ type: "text", text: FAST_MODE_INSTRUCTION, text_elements: [] }]
             : []),
           ...(nativeChromeRequested &&
           drawsyTabId &&
