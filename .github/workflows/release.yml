@@ -145,8 +145,77 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Package installer
-        if: matrix.artifact != 'macos'
+        if: matrix.artifact == 'linux'
         run: pnpm run package
+
+      - name: Package Microsoft Store Windows AppX
+        if: matrix.artifact == 'windows'
+        env:
+          STORE_APPX_IDENTITY_NAME: ${{ vars.STORE_APPX_IDENTITY_NAME }}
+          STORE_APPX_PUBLISHER: ${{ vars.STORE_APPX_PUBLISHER }}
+          STORE_APPX_PUBLISHER_DISPLAY_NAME: ${{ vars.STORE_APPX_PUBLISHER_DISPLAY_NAME }}
+        run: pnpm run package:store
+
+      - name: Validate Microsoft Store AppX package
+        if: matrix.artifact == 'windows'
+        shell: pwsh
+        env:
+          STORE_APPX_IDENTITY_NAME: ${{ vars.STORE_APPX_IDENTITY_NAME }}
+          STORE_APPX_PUBLISHER: ${{ vars.STORE_APPX_PUBLISHER }}
+          STORE_APPX_PUBLISHER_DISPLAY_NAME: ${{ vars.STORE_APPX_PUBLISHER_DISPLAY_NAME }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $packages = @(Get-ChildItem -Path "release" -Filter "*.appx" -File)
+          if ($packages.Count -ne 1) {
+            throw "Expected exactly one Store AppX package; found $($packages.Count)."
+          }
+          $package = $packages[0]
+          $packageSignature = Get-AuthenticodeSignature -FilePath $package.FullName
+          if ($packageSignature.Status -ne "NotSigned") {
+            throw "Store submission package should be unsigned before Microsoft certification; found $($packageSignature.Status)."
+          }
+          Write-Host "The AppX package is intentionally unsigned before Microsoft Store certification."
+
+          $windowsKits = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin"
+          $makeAppx = Get-ChildItem -LiteralPath $windowsKits -Filter "makeappx.exe" -Recurse -File |
+            Sort-Object FullName |
+            Select-Object -Last 1
+          if (-not $makeAppx) {
+            throw "Windows SDK makeappx.exe was not found for package validation."
+          }
+
+          $unpackedPath = Join-Path $env:RUNNER_TEMP "drawsy-companion-appx-unpacked"
+          & $makeAppx.FullName unpack /p $package.FullName /d $unpackedPath /o
+          if ($LASTEXITCODE -ne 0) {
+            throw "makeappx could not unpack the Store package."
+          }
+          $manifestPath = Join-Path $unpackedPath "AppxManifest.xml"
+          if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            throw "The Store package does not contain AppxManifest.xml."
+          }
+
+          [xml]$manifest = Get-Content -LiteralPath $manifestPath -Raw
+          $identity = $manifest.Package.Identity
+          if ($identity.Name -ne $env:STORE_APPX_IDENTITY_NAME) {
+            throw "Package identity name does not match the configured Store identity."
+          }
+          if ($identity.Publisher -ne $env:STORE_APPX_PUBLISHER) {
+            throw "Package publisher does not match the configured Store publisher."
+          }
+          if ($manifest.Package.Properties.DisplayName -ne "DrawsyAI Companion") {
+            throw "Package display name does not match DrawsyAI Companion."
+          }
+          if ($manifest.Package.Properties.PublisherDisplayName -ne $env:STORE_APPX_PUBLISHER_DISPLAY_NAME) {
+            throw "Package publisher display name does not match Partner Center."
+          }
+          $version = (Get-Content -LiteralPath "package.json" -Raw | ConvertFrom-Json).version
+          if ($identity.Version -ne "$version.0") {
+            throw "Package version $($identity.Version) does not match package.json version $version."
+          }
+          Get-FileHash -LiteralPath $package.FullName -Algorithm SHA256 | Format-List
+          Write-Host "The AppX package structure, identity, publisher, and version are valid."
+          Write-Host "A Store submission package is signed by Microsoft after certification."
 
       - name: Build signed macOS application
         if: matrix.artifact == 'macos'
@@ -320,6 +389,7 @@ jobs:
             release/*.dmg
             release/*.zip
             release/*.exe
+            release/*.appx
             release/*.AppImage
             release/*.deb
           if-no-files-found: error
@@ -359,12 +429,6 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: drawsy-companion-linux
-          path: release-artifacts
-
-      - name: Download Windows artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: drawsy-companion-windows
           path: release-artifacts
 
       - name: Download macOS artifacts

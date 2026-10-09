@@ -155,7 +155,15 @@ Configure these repository secrets before pushing a release tag:
 - `APPLE_API_ISSUER` — the App Store Connect issuer UUID.
 - `MAC_RECOVERY_ENCRYPTION_KEY` — a random high-entropy secret used only to encrypt resumable Mac release artifacts.
 
-The workflow reconstructs the `.p8` only in the macOS runner’s temporary directory, passes its path to `notarytool`, and fails before packaging if any Mac signing secret is missing. Before waiting on Apple, it preserves the signed app and notarization metadata in an encrypted GitHub Actions recovery artifact; the plaintext app and credentials are not exposed through the public repository. If Apple holds a submission longer than the bounded wait, do not rerun the release and create a duplicate submission. After Apple reports `Accepted`, run **Finalize Delayed macOS Release** with the source release workflow run ID; it restores the exact signed app, staples and validates the ticket, packages the DMG and ZIP, and publishes the complete release. The current Windows and Linux artifacts remain unsigned until their platform signing configuration is added.
+The workflow reconstructs the `.p8` only in the macOS runner’s temporary directory, passes its path to `notarytool`, and fails before packaging if any Mac signing secret is missing. Before waiting on Apple, it preserves the signed app and notarization metadata in an encrypted GitHub Actions recovery artifact; the plaintext app and credentials are not exposed through the public repository. If Apple holds a submission longer than the bounded wait, do not rerun the release and create a duplicate submission. After Apple reports `Accepted`, run **Finalize Delayed macOS Release** with the source release workflow run ID; it restores the exact signed app, staples and validates the ticket, packages the DMG and ZIP, and publishes the complete release. Existing Windows and Linux releases remain unsigned; the Windows Store package is built as AppX, while Linux artifacts remain unsigned.
+
+Windows release builds create a Microsoft Store AppX package. Configure these repository variables with the identity values shown by Partner Center after the product type is set to MSIX/AppX:
+
+- `STORE_APPX_IDENTITY_NAME` — the Store package identity name.
+- `STORE_APPX_PUBLISHER` — the exact Store publisher value.
+- `STORE_APPX_PUBLISHER_DISPLAY_NAME` — the publisher display name shown by Partner Center.
+
+These values are public package metadata, not signing credentials. Run **Build DrawsyAI Companion Store Package** from GitHub Actions to build only the Windows x64 package. It checks the package signature state and manifest name, identity, publisher, and version, then retains the `.appx` file as an Actions artifact for Partner Center upload. Microsoft signs the package after Store certification. No Windows certificate or signing secret is required for Store distribution.
 
 ## Contributing
 

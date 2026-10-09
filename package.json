@@ -1,6 +1,6 @@
 {
   "name": "@drawsy/companion",
-  "version": "0.1.25",
+  "version": "0.1.26",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.11.0",
@@ -28,6 +28,7 @@
     "test": "tsc -p tsconfig.test.json && node --test dist-test/drawsy/*.test.js",
     "check": "pnpm build && pnpm test",
     "package": "pnpm clean && pnpm build && electron-builder --publish never",
+    "package:store": "pnpm clean && pnpm build && node scripts/package-store.mjs",
     "package:dir": "pnpm clean && pnpm build && electron-builder --dir",
     "release": "pnpm clean && pnpm build && electron-builder --publish always",
     "prepack": "pnpm build"
@@ -72,7 +73,7 @@
       "target": ["dmg", "zip"]
     },
     "win": {
-      "target": ["nsis", "zip"]
+      "target": ["appx"]
     },
     "linux": {
       "category": "Utility",
