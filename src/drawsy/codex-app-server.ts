@@ -1378,6 +1378,9 @@ export class CodexAppServer {
           default_tools_approval_mode: "auto",
           tools: {
             apply_canvas_changes: { approval_mode: "approve" },
+            render_diagram_code: { approval_mode: "approve" },
+            create_or_update_connector: { approval_mode: "approve" },
+            set_container_label: { approval_mode: "approve" },
             add_image_from_file: { approval_mode: "approve" },
             replace_canvas_image_from_file: { approval_mode: "approve" },
             attach_live_preview: { approval_mode: "approve" },

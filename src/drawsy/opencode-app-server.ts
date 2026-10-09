@@ -63,6 +63,12 @@ type SessionApiKey = {
   metadata: Record<string, string>;
 };
 
+type OpenCodePermissionRule = {
+  permission: string;
+  pattern: string;
+  action: "allow" | "deny" | "ask";
+};
+
 type OpenCodeEvent = {
   type?: unknown;
   properties?: unknown;
@@ -97,6 +103,79 @@ const stringArray = (value: unknown) =>
   Array.isArray(value)
     ? value.filter((entry): entry is string => typeof entry === "string")
     : [];
+
+export type OpenCodeTurnFailure = {
+  code: "opencode_provider_access_denied" | "opencode_provider_error";
+  message: string;
+};
+
+export const openCodeTurnFailureFromEvent = (
+  event: OpenCodeEvent
+): OpenCodeTurnFailure | null => {
+  const type = stringValue(event.type);
+  const properties = toRecord(event.properties);
+  const info = toRecord(properties.info);
+  const errorValue =
+    type === "message.updated"
+      ? info.error
+      : type === "session.error"
+      ? properties.error ?? info.error
+      : null;
+  const hasError =
+    (typeof errorValue === "string" && errorValue.trim().length > 0) ||
+    (isRecord(errorValue) && Object.keys(errorValue).length > 0);
+  if (!hasError) return null;
+
+  const error = toRecord(errorValue);
+  const data = toRecord(error.data);
+  const rawStatus =
+    data.statusCode ?? data.status ?? error.statusCode ?? error.status;
+  const statusCode =
+    typeof rawStatus === "number"
+      ? rawStatus
+      : typeof rawStatus === "string"
+      ? Number(rawStatus)
+      : Number.NaN;
+  if (statusCode === 401 || statusCode === 403) {
+    return {
+      code: "opencode_provider_access_denied",
+      message: "The AI provider refused this request."
+    };
+  }
+  return {
+    code: "opencode_provider_error",
+    message: "OpenCode could not complete this request."
+  };
+};
+
+export const createOpenCodePermissionRules = (
+  accessMode: AgentAccessMode,
+  runtimePath?: string
+): OpenCodePermissionRule[] => {
+  return [
+    { permission: "external_directory", pattern: "*", action: "deny" },
+    // OpenCode stores truncated tool results outside the workspace. Its built-in
+    // allowances precede session rules, so restore access only to this runtime's
+    // generated output after the blanket external-directory denial.
+    ...(runtimePath
+      ? ["data/opencode/tool-output", "tmp/opencode"].map((directory) => ({
+          permission: "external_directory",
+          pattern: `${path.join(runtimePath, directory)}/*`,
+          action: "allow" as const
+        }))
+      : []),
+    { permission: "webfetch", pattern: "*", action: "deny" },
+    { permission: "websearch", pattern: "*", action: "deny" },
+    { permission: "task", pattern: "*", action: "deny" },
+    { permission: "question", pattern: "*", action: "deny" },
+    {
+      permission: "edit",
+      pattern: "*",
+      action: accessMode === "workspace" ? "allow" : "deny"
+    },
+    { permission: "bash", pattern: "*", action: "allow" }
+  ];
+};
 
 const apiKeyProviderFields = (
   value: unknown
@@ -409,6 +488,7 @@ export class OpenCodeAppServer {
   private currentModel: AvailableModel | null = null;
   private agentMetadata: AgentMetadata | null = null;
   private turnActive = false;
+  private turnFailure: OpenCodeTurnFailure | null = null;
   private generationMode: "fast" | "draw" = "draw";
   private closed = false;
   private lastProcessError = "";
@@ -824,19 +904,7 @@ export class OpenCodeAppServer {
   }
 
   private permissionRules() {
-    return [
-      { permission: "external_directory", pattern: "*", action: "deny" },
-      { permission: "webfetch", pattern: "*", action: "deny" },
-      { permission: "websearch", pattern: "*", action: "deny" },
-      { permission: "task", pattern: "*", action: "deny" },
-      { permission: "question", pattern: "*", action: "deny" },
-      {
-        permission: "edit",
-        pattern: "*",
-        action: this.accessMode === "workspace" ? "allow" : "deny"
-      },
-      { permission: "bash", pattern: "*", action: "allow" }
-    ];
+    return createOpenCodePermissionRules(this.accessMode, this.runtimePath ?? undefined);
   }
 
   private async createOpenCodeSession() {
@@ -949,8 +1017,7 @@ export class OpenCodeAppServer {
       ? await loadBundledFastDiagramSkill()
       : null;
     this.generationMode = generationMode;
-    this.turnActive = true;
-    this.emit({ type: "turn.status", data: { status: "inProgress" } });
+    this.beginTurn();
     const parts: Array<JsonObject> = [];
     for (const context of contexts) {
       parts.push({
@@ -1054,6 +1121,12 @@ export class OpenCodeAppServer {
       this.turnActive = false;
       throw error;
     }
+  }
+
+  private beginTurn() {
+    this.turnFailure = null;
+    this.turnActive = true;
+    this.emit({ type: "turn.status", data: { status: "inProgress" } });
   }
 
   async interruptTurn() {
@@ -1344,27 +1417,51 @@ export class OpenCodeAppServer {
   private handleEvent(event: OpenCodeEvent) {
     const type = stringValue(event.type);
     const properties = toRecord(event.properties);
+    const info = toRecord(properties.info);
+    const eventSessionId =
+      stringValue(properties.sessionID) || stringValue(info.sessionID);
     if (
       this.openCodeSessionId &&
-      stringValue(properties.sessionID) &&
-      properties.sessionID !== this.openCodeSessionId
+      eventSessionId &&
+      eventSessionId !== this.openCodeSessionId
     ) {
+      return;
+    }
+    const failure = openCodeTurnFailureFromEvent(event);
+    if (failure) {
+      if (!this.turnActive || this.turnFailure) return;
+      this.turnFailure = failure;
+      this.turnActive = false;
+      this.emit({
+        type: "error",
+        data: { code: failure.code, message: failure.message }
+      });
+      this.emit({
+        type: "turn.status",
+        data: { status: "failed" }
+      });
       return;
     }
     if (type === "session.status") {
       const status = toRecord(properties.status);
       const state = stringValue(status.type) || stringValue(properties.status);
       if (state === "busy") {
-        this.emit({ type: "turn.status", data: { status: "inProgress" } });
+        if (!this.turnFailure) {
+          this.emit({ type: "turn.status", data: { status: "inProgress" } });
+        }
       } else if (state === "idle") {
         this.turnActive = false;
-        this.emit({ type: "turn.status", data: { status: "completed" } });
+        if (!this.turnFailure) {
+          this.emit({ type: "turn.status", data: { status: "completed" } });
+        }
       }
       return;
     }
     if (type === "session.idle") {
       this.turnActive = false;
-      this.emit({ type: "turn.status", data: { status: "completed" } });
+      if (!this.turnFailure) {
+        this.emit({ type: "turn.status", data: { status: "completed" } });
+      }
       return;
     }
     if (type === "message.part.updated") {
