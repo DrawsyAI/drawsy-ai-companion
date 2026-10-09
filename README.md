@@ -155,7 +155,14 @@ Configure these repository secrets before pushing a release tag:
 - `APPLE_API_ISSUER` — the App Store Connect issuer UUID.
 - `MAC_RECOVERY_ENCRYPTION_KEY` — a random high-entropy secret used only to encrypt resumable Mac release artifacts.
 
-The workflow reconstructs the `.p8` only in the macOS runner’s temporary directory, passes its path to `notarytool`, and fails before packaging if any Mac signing secret is missing. Before waiting on Apple, it preserves the signed app and notarization metadata in an encrypted GitHub Actions recovery artifact; the plaintext app and credentials are not exposed through the public repository. If Apple holds a submission longer than the bounded wait, do not rerun the release and create a duplicate submission. After Apple reports `Accepted`, run **Finalize Delayed macOS Release** with the source release workflow run ID; it restores the exact signed app, staples and validates the ticket, packages the DMG and ZIP, and publishes the complete release. The current Windows and Linux artifacts remain unsigned until their platform signing configuration is added.
+The workflow reconstructs the `.p8` only in the macOS runner’s temporary directory, passes its path to `notarytool`, and fails before packaging if any Mac signing secret is missing. Before waiting on Apple, it preserves the signed app and notarization metadata in an encrypted GitHub Actions recovery artifact; the plaintext app and credentials are not exposed through the public repository. If Apple holds a submission longer than the bounded wait, do not rerun the release and create a duplicate submission. After Apple reports `Accepted`, run **Finalize Delayed macOS Release** with the source release workflow run ID; it restores the exact signed app, staples and validates the ticket, packages the DMG and ZIP, and publishes the complete release. Existing Windows and Linux releases remain unsigned; new Windows releases require the signing secrets described below, while Linux artifacts remain unsigned.
+
+Windows release builds sign the installer and packaged PE files with an Authenticode certificate. Configure these repository secrets before pushing a release tag:
+
+- `WINDOWS_CSC_PFX_BASE64` — one-line base64 of a password-protected PFX containing a CA-trusted Authenticode code-signing certificate.
+- `WINDOWS_CSC_KEY_PASSWORD` — the password protecting that PFX.
+
+The workflow writes the PFX only to the Windows runner’s temporary directory, requires code signing, validates the installer and every PE file in both the unpacked app and Windows ZIP, then removes the PFX. It fails before packaging when either secret is missing or any signature is invalid. Linux artifacts remain unsigned.
 
 ## Contributing
 

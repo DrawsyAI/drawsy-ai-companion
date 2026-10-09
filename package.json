@@ -1,6 +1,6 @@
 {
   "name": "@drawsy/companion",
-  "version": "0.1.25",
+  "version": "0.1.26",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.11.0",
@@ -72,7 +72,9 @@
       "target": ["dmg", "zip"]
     },
     "win": {
-      "target": ["nsis", "zip"]
+      "target": ["nsis", "zip"],
+      "forceCodeSigning": true,
+      "signExts": [".exe", ".dll", ".node", ".ocx", ".pyd"]
     },
     "linux": {
       "category": "Utility",

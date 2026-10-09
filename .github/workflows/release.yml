@@ -144,9 +144,105 @@ jobs:
             printf 'APPLE_API_ISSUER=%s\n' "$APPLE_API_ISSUER"
           } >> "$GITHUB_ENV"
 
+      - name: Prepare Windows signing credentials
+        if: matrix.artifact == 'windows'
+        shell: pwsh
+        env:
+          WINDOWS_CSC_PFX_BASE64: ${{ secrets.WINDOWS_CSC_PFX_BASE64 }}
+          WINDOWS_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CSC_PFX_BASE64)) {
+            throw "Missing Windows signing secret: WINDOWS_CSC_PFX_BASE64"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CSC_KEY_PASSWORD)) {
+            throw "Missing Windows signing secret: WINDOWS_CSC_KEY_PASSWORD"
+          }
+
+          $certificatePath = Join-Path $env:RUNNER_TEMP "drawsy-companion-signing.pfx"
+          $certificateBytes = [Convert]::FromBase64String($env:WINDOWS_CSC_PFX_BASE64)
+          if ($certificateBytes.Length -eq 0) {
+            throw "Windows signing certificate secret decoded to an empty file."
+          }
+          [IO.File]::WriteAllBytes($certificatePath, $certificateBytes)
+          Add-Content -Path $env:GITHUB_ENV -Value "WIN_CSC_LINK=$certificatePath"
+          Add-Content -Path $env:GITHUB_ENV -Value "WINDOWS_SIGNING_CERTIFICATE=$certificatePath"
+
       - name: Package installer
-        if: matrix.artifact != 'macos'
+        if: matrix.artifact == 'linux'
         run: pnpm run package
+
+      - name: Package signed Windows installer
+        if: matrix.artifact == 'windows'
+        env:
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+        run: pnpm run package
+
+      - name: Verify Windows package signatures
+        if: matrix.artifact == 'windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $installerFiles = @(Get-ChildItem -Path "release" -Filter "*.exe" -File)
+          if ($installerFiles.Count -ne 1) {
+            throw "Expected exactly one Windows installer EXE; found $($installerFiles.Count)."
+          }
+          $installerSignature = Get-AuthenticodeSignature -FilePath $installerFiles[0].FullName
+          if ($installerSignature.Status -ne "Valid") {
+            throw "Windows installer signature is $($installerSignature.Status)."
+          }
+          Write-Host "Installer Authenticode signature is valid."
+
+          $unpackedPath = Join-Path "release" "win-unpacked"
+          if (-not (Test-Path -LiteralPath $unpackedPath -PathType Container)) {
+            throw "Electron Builder did not leave the unpacked Windows application for verification."
+          }
+
+          $zipFiles = @(Get-ChildItem -Path "release" -Filter "*.zip" -File)
+          if ($zipFiles.Count -ne 1) {
+            throw "Expected exactly one Windows ZIP package; found $($zipFiles.Count)."
+          }
+          $zipExtractPath = Join-Path $env:RUNNER_TEMP "drawsy-companion-windows-zip"
+          Expand-Archive -LiteralPath $zipFiles[0].FullName -DestinationPath $zipExtractPath -Force
+
+          function Get-PortableExecutables([string] $Path) {
+            foreach ($file in Get-ChildItem -LiteralPath $Path -Recurse -File) {
+              $stream = [IO.File]::OpenRead($file.FullName)
+              try {
+                if ($stream.Length -lt 64) { continue }
+                $stream.Position = 0x3C
+                $offsetBytes = New-Object byte[] 4
+                if ($stream.Read($offsetBytes, 0, 4) -ne 4) { continue }
+                $peOffset = [BitConverter]::ToInt32($offsetBytes, 0)
+                if ($peOffset -lt 0 -or $peOffset -gt ($stream.Length - 4)) { continue }
+                $stream.Position = $peOffset
+                $signature = New-Object byte[] 4
+                if ($stream.Read($signature, 0, 4) -eq 4 -and
+                    $signature[0] -eq 0x50 -and $signature[1] -eq 0x45 -and
+                    $signature[2] -eq 0 -and $signature[3] -eq 0) {
+                  $file
+                }
+              } finally {
+                $stream.Dispose()
+              }
+            }
+          }
+
+          foreach ($payloadPath in @($unpackedPath, $zipExtractPath)) {
+            $portableExecutables = @(Get-PortableExecutables -Path $payloadPath)
+            if ($portableExecutables.Count -eq 0) {
+              throw "No PE files were found in $payloadPath."
+            }
+            foreach ($file in $portableExecutables) {
+              $signature = Get-AuthenticodeSignature -FilePath $file.FullName
+              if ($signature.Status -ne "Valid") {
+                throw "PE signature is $($signature.Status): $($file.FullName)"
+              }
+            }
+            Write-Host "Validated Authenticode signatures for $($portableExecutables.Count) PE files in $payloadPath."
+          }
 
       - name: Build signed macOS application
         if: matrix.artifact == 'macos'
@@ -348,6 +444,15 @@ jobs:
           if [[ -n "${MAC_SIGNING_KEYCHAIN:-}" ]]; then
             security delete-keychain "$MAC_SIGNING_KEYCHAIN" >/dev/null 2>&1 || true
           fi
+
+      - name: Clean up Windows signing credentials
+        if: ${{ always() && matrix.artifact == 'windows' }}
+        shell: pwsh
+        run: |
+          if ($env:WINDOWS_SIGNING_CERTIFICATE -and
+              (Test-Path -LiteralPath $env:WINDOWS_SIGNING_CERTIFICATE)) {
+            Remove-Item -LiteralPath $env:WINDOWS_SIGNING_CERTIFICATE -Force
+          }
 
   publish-release:
     name: Publish GitHub Release

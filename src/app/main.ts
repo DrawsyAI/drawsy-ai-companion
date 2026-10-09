@@ -127,7 +127,7 @@ if (!gotSingleInstanceLock) {
           enabled: false
         },
         {
-          label: "Local bridge: http://127.0.0.1:3031",
+          label: `Local bridge: ${bridge.address}`,
           enabled: false
         },
         {
@@ -224,7 +224,7 @@ if (!gotSingleInstanceLock) {
           <main>
             <h1>Drawsy Companion</h1>
             <p>Local bridge is running.</p>
-            <p><code>http://127.0.0.1:3031</code></p>
+            <p><code>${bridge.address}</code></p>
             <p>Version: <code>${app.getVersion()}</code></p>
             <p>Connectors: <code>${bridge.connectorRouting}</code></p>
             <p>Use the tray icon for engine status and quit.</p>
