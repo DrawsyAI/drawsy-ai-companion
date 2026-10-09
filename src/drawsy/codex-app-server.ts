@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import crossSpawn from "cross-spawn";
 import { randomUUID } from "node:crypto";
 import { access, readdir, readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
@@ -992,7 +993,10 @@ export class CodexAppServer {
         "Codex was not found. Install or launch Codex on this device, then refresh the Companion engine status."
       );
     }
-    this.process = spawn(
+    // Windows npm command shims need cmd.exe escaping; native executables do
+    // not. cross-spawn handles both without splitting paths at spaces.
+    const spawnCodex = process.platform === "win32" ? crossSpawn.spawn : spawn;
+    this.process = spawnCodex(
       codexBinary,
       [
         "app-server",
@@ -1020,7 +1024,7 @@ export class CodexAppServer {
       ],
       {
         stdio: ["pipe", "pipe", "pipe"],
-        shell: process.platform === "win32",
+        windowsHide: true,
         detached: session.isolateProcessGroup && process.platform !== "win32",
         env: codexEnvironment(session.previewPort),
       }

@@ -15,8 +15,10 @@ Installers are published on the [GitHub Releases page](https://github.com/Drawsy
 | Platform | Release artifacts |
 | --- | --- |
 | macOS | `.dmg`, `.zip` |
-| Windows | `.exe` installer, `.zip` |
+| Windows | unsigned `.zip` test build; `.appx` for Microsoft Store submission |
 | Linux | `.AppImage`, `.deb` |
+
+For direct Windows testing, extract the ZIP and run `drawsy-companion.exe`. The ZIP is unsigned and Windows may show a security warning. The AppX is a Store submission package; Microsoft signs it after certification. It is not a signed installer for direct download.
 
 Install and launch the companion when you want to use local mode. It stays visible as a tray/menu-bar application while it is running and listens only on loopback. Windows opens a small welcome window with **Open Drawsy**, which opens https://drawsyai.com in your default browser, and the Companion, Codex, and OpenCode statuses. Status is refreshed when you reopen the window or choose **Refresh engine status** in the tray menu. Linux keeps its existing status window. Click the tray icon or choose **Open status window** to reopen it. Closing the window hides it back to the tray. It does not start automatically when you sign in. Choose **Quit Drawsy Companion** from the tray/menu-bar menu to stop local access; a terminal process is not required for normal use.
 

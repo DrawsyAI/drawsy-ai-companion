@@ -1,7 +1,9 @@
 import { spawnSync } from "node:child_process";
+import crossSpawn from "cross-spawn";
 import { delimiter, join } from "node:path";
 
 const PROBE_TIMEOUT_MS = 3_000;
+const probeExecutable = process.platform === "win32" ? crossSpawn.sync : spawnSync;
 
 export type ExecutableVersion = [number, number, number];
 
@@ -90,11 +92,10 @@ export const resolveExecutable = ({
 
   const resolved = [...new Set(candidates)].flatMap(
     (candidate): ResolvedExecutable[] => {
-      const result = spawnSync(candidate, ["--version"], {
+      const result = probeExecutable(candidate, ["--version"], {
         encoding: "utf8",
         timeout: PROBE_TIMEOUT_MS,
         windowsHide: true,
-        shell: process.platform === "win32",
         env: environment
       });
       if (result.error || result.status !== 0) return [];
@@ -114,11 +115,10 @@ export const detectExecutable = (input: ResolveExecutableInput) => {
     ...process.env,
     PATH: executableSearchPath().join(delimiter)
   };
-  const result = spawnSync(binary, ["--version"], {
+  const result = probeExecutable(binary, ["--version"], {
     encoding: "utf8",
     timeout: PROBE_TIMEOUT_MS,
     windowsHide: true,
-    shell: process.platform === "win32",
     env: environment
   });
   if (result.error || result.status !== 0) return null;
