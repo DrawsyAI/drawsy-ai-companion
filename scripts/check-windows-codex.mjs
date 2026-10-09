@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import net from "node:net";
 
 if (process.platform !== "win32") throw new Error("This smoke check runs only on Windows CI.");
 if (!process.env.DRAWSY_CODEX_BIN) throw new Error("A CI-installed Codex binary is required.");
@@ -14,7 +15,14 @@ process.env.CODEX_HOME = path.join(root, "codex-home");
 process.env.DRAWSY_LOCAL_STATE_DIR = path.join(root, "companion-state");
 await mkdir(process.env.CODEX_HOME, { recursive: true });
 const { createDrawsyBridge } = await import("../dist/drawsy/bridge.js");
-const bridge = createDrawsyBridge({ port: 0, allowedOrigins: ["https://drawsyai.com"] });
+const portProbe = net.createServer();
+await new Promise((resolve, reject) => {
+  portProbe.once("error", reject);
+  portProbe.listen(0, "127.0.0.1", resolve);
+});
+const port = portProbe.address().port;
+await new Promise((resolve, reject) => portProbe.close((error) => error ? reject(error) : resolve()));
+const bridge = createDrawsyBridge({ port, allowedOrigins: ["https://drawsyai.com"] });
 try {
   await bridge.listen();
   const response = await fetch(`${bridge.address}/v1/sessions`, {
@@ -33,7 +41,7 @@ try {
     })
   });
   const body = await response.json();
-  assert.equal(response.status, 200, JSON.stringify(body));
+  assert.equal(response.status, 201, JSON.stringify(body));
   assert.equal(typeof body.id, "string");
   assert.equal(typeof body.token, "string");
   console.log("Native Windows Codex: POST /v1/sessions succeeded with scoped permissions and Drawsy MCP ready. No model turn sent.");

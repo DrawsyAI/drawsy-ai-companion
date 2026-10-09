@@ -854,7 +854,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       }),
     }).then(async (response) => {
       const body = await response.json();
-      assert.equal(response.status, 200, JSON.stringify(body));
+      assert.equal(response.status, 201, JSON.stringify(body));
       return body;
     })) as {
       id: string;
