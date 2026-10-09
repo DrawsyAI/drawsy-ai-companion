@@ -4,11 +4,14 @@ import {
   dialog,
   Menu,
   nativeImage,
+  shell,
   Tray
 } from "electron";
 import type { OpenDialogOptions } from "electron";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import path from "node:path";
+import { createWindowsStatusPage, DRAWSY_URL, windowsStatus } from "./status-window.js";
 
 import { createDrawsyBridge } from "../drawsy/bridge.js";
 import { loadDrawsyEnvironment } from "../drawsy/environment.js";
@@ -109,6 +112,21 @@ if (!gotSingleInstanceLock) {
   });
   let tray: Tray | null = null;
   let closing = false;
+  let bridgeRunning = false;
+
+  const refreshWindowStatus = (engines?: ReturnType<typeof readLocalEngineStatus>) => {
+    if (process.platform !== "win32" || !presenceWindow || presenceWindow.webContents.isLoading()) return;
+    const statuses = windowsStatus(engines ?? readLocalEngineStatus(), bridgeRunning);
+    void presenceWindow.webContents.executeJavaScript(`
+      for (const status of ${JSON.stringify(statuses)}) {
+        const element = document.getElementById(status.id);
+        if (element) {
+          if (element.textContent !== status.text) element.textContent = status.text;
+          element.dataset.available = String(status.available);
+        }
+      }
+    `).catch((error) => console.warn("Could not refresh Companion status.", error));
+  };
 
   const trayImage = nativeImage.createFromPath(
     path.join(app.getAppPath(), "build/icon.png")
@@ -120,6 +138,7 @@ if (!gotSingleInstanceLock) {
   const refreshMenu = () => {
     if (!tray) return;
     const engines = readLocalEngineStatus();
+    refreshWindowStatus(engines);
     tray.setContextMenu(
       Menu.buildFromTemplate([
         {
@@ -171,6 +190,7 @@ if (!gotSingleInstanceLock) {
     if (presenceWindow.isMinimized()) presenceWindow.restore();
     presenceWindow.show();
     presenceWindow.focus();
+    refreshWindowStatus();
   };
 
   const shutdown = async () => {
@@ -188,16 +208,16 @@ if (!gotSingleInstanceLock) {
     if (process.platform === "darwin" || presenceWindow) return;
 
     presenceWindow = new BrowserWindow({
-      width: 360,
-      height: 220,
+      width: process.platform === "win32" ? 560 : 360,
+      height: process.platform === "win32" ? 580 : 220,
       minWidth: 320,
-      minHeight: 180,
-      title: "Drawsy Companion",
+      minHeight: process.platform === "win32" ? 500 : 180,
+      title: process.platform === "win32" ? "DrawsyAI Companion" : "Drawsy Companion",
       icon: path.join(app.getAppPath(), "build/icon.png"),
       show: false,
       skipTaskbar: true,
       autoHideMenuBar: true,
-      backgroundColor: "#15131d",
+      backgroundColor: process.platform === "win32" ? "#fbfafc" : "#15131d",
       webPreferences: {
         contextIsolation: true,
         nodeIntegration: false,
@@ -205,7 +225,9 @@ if (!gotSingleInstanceLock) {
       }
     });
 
-    const statusPage = `<!doctype html>
+    const statusPage = process.platform === "win32"
+      ? createWindowsStatusPage(app.getVersion(), readFileSync(path.join(app.getAppPath(), "build/companion-connection.svg"), "utf8"))
+      : `<!doctype html>
       <html lang="en">
         <head>
           <meta charset="utf-8">
@@ -231,6 +253,23 @@ if (!gotSingleInstanceLock) {
           </main>
         </body>
       </html>`;
+    if (process.platform === "win32") {
+      const openDrawsy = () => {
+        void shell.openExternal(DRAWSY_URL).catch((error) => {
+          console.warn("Could not open Drawsy in the browser.", error);
+          void presenceWindow?.webContents.executeJavaScript(
+            `document.getElementById('browser-caption').textContent = 'Could not open your browser. Please try again.'`
+          ).catch(() => {});
+        });
+      };
+      presenceWindow.webContents.on("will-navigate", (event, url) => {
+        event.preventDefault();
+        if (url === DRAWSY_URL || url === `${DRAWSY_URL}/`) openDrawsy();
+      });
+      presenceWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+      presenceWindow.webContents.on("did-finish-load", () => refreshWindowStatus());
+      presenceWindow.once("ready-to-show", showPresenceWindow);
+    }
     void presenceWindow.loadURL(
       `data:text/html;charset=utf-8,${encodeURIComponent(statusPage)}`
     );
@@ -255,6 +294,10 @@ if (!gotSingleInstanceLock) {
 
     createPresenceWindow();
     await bridge.listen();
+    bridgeRunning = true;
+    if (process.platform === "win32") {
+      refreshWindowStatus();
+    }
     tray = new Tray(trayImage);
     tray.setToolTip("Drawsy Companion");
     if (process.platform !== "darwin") {
