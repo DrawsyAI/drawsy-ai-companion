@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import net from "node:net";
+import { pathToFileURL } from "node:url";
 
 if (process.platform !== "win32") throw new Error("This smoke check runs only on Windows CI.");
 if (!process.env.DRAWSY_CODEX_BIN) throw new Error("A CI-installed Codex binary is required.");
@@ -14,7 +15,12 @@ const root = await mkdtemp(path.join(tmpdir(), "drawsy native codex test "));
 process.env.CODEX_HOME = path.join(root, "codex-home");
 process.env.DRAWSY_LOCAL_STATE_DIR = path.join(root, "companion-state");
 await mkdir(process.env.CODEX_HOME, { recursive: true });
-const { createDrawsyBridge } = await import("../dist/drawsy/bridge.js");
+const packaged = process.argv.includes("--packaged");
+if (packaged && !process.versions.electron) throw new Error("Packaged check must use the release Electron executable.");
+const bridgeModule = packaged
+  ? pathToFileURL(path.join(path.dirname(process.execPath), "resources/app.asar/dist/drawsy/bridge.js")).href
+  : "../dist/drawsy/bridge.js";
+const { createDrawsyBridge } = await import(bridgeModule);
 const portProbe = net.createServer();
 await new Promise((resolve, reject) => {
   portProbe.once("error", reject);
