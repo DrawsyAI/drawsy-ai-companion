@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
 
 import {
@@ -18,12 +19,12 @@ test("OpenCode permissions keep generated output scoped to the session runtime",
     { permission: "external_directory", pattern: "*", action: "deny" },
     {
       permission: "external_directory",
-      pattern: `${runtimePath}/data/opencode/tool-output/*`,
+      pattern: `${path.join(runtimePath, "data/opencode/tool-output")}/*`,
       action: "allow"
     },
     {
       permission: "external_directory",
-      pattern: `${runtimePath}/tmp/opencode/*`,
+      pattern: `${path.join(runtimePath, "tmp/opencode")}/*`,
       action: "allow"
     }
   ]);
