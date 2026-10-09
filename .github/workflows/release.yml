@@ -153,6 +153,7 @@ jobs:
         env:
           STORE_APPX_IDENTITY_NAME: ${{ vars.STORE_APPX_IDENTITY_NAME }}
           STORE_APPX_PUBLISHER: ${{ vars.STORE_APPX_PUBLISHER }}
+          STORE_APPX_PUBLISHER_DISPLAY_NAME: ${{ vars.STORE_APPX_PUBLISHER_DISPLAY_NAME }}
         run: pnpm run package:store
 
       - name: Validate Microsoft Store AppX package
@@ -161,6 +162,7 @@ jobs:
         env:
           STORE_APPX_IDENTITY_NAME: ${{ vars.STORE_APPX_IDENTITY_NAME }}
           STORE_APPX_PUBLISHER: ${{ vars.STORE_APPX_PUBLISHER }}
+          STORE_APPX_PUBLISHER_DISPLAY_NAME: ${{ vars.STORE_APPX_PUBLISHER_DISPLAY_NAME }}
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -200,6 +202,12 @@ jobs:
           }
           if ($identity.Publisher -ne $env:STORE_APPX_PUBLISHER) {
             throw "Package publisher does not match the configured Store publisher."
+          }
+          if ($manifest.Package.Properties.DisplayName -ne "DrawsyAI Companion") {
+            throw "Package display name does not match DrawsyAI Companion."
+          }
+          if ($manifest.Package.Properties.PublisherDisplayName -ne $env:STORE_APPX_PUBLISHER_DISPLAY_NAME) {
+            throw "Package publisher display name does not match Partner Center."
           }
           $version = (Get-Content -LiteralPath "package.json" -Raw | ConvertFrom-Json).version
           if ($identity.Version -ne "$version.0") {

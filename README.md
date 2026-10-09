@@ -161,8 +161,9 @@ Windows release builds create a Microsoft Store AppX package. Configure these re
 
 - `STORE_APPX_IDENTITY_NAME` — the Store package identity name.
 - `STORE_APPX_PUBLISHER` — the exact Store publisher value.
+- `STORE_APPX_PUBLISHER_DISPLAY_NAME` — the publisher display name shown by Partner Center.
 
-These values are public package metadata, not signing credentials. The Windows package workflow checks the package manifest, identity, publisher, and version, then retains the `.appx` file as a GitHub Actions artifact for Partner Center upload. It does not attach the AppX file to GitHub Releases: Microsoft signs the package after Store certification. No Windows certificate or signing secret is required for Store distribution.
+These values are public package metadata, not signing credentials. Run **Build DrawsyAI Companion Store Package** from GitHub Actions to build only the Windows x64 package. It checks the package signature state and manifest name, identity, publisher, and version, then retains the `.appx` file as an Actions artifact for Partner Center upload. Microsoft signs the package after Store certification. No Windows certificate or signing secret is required for Store distribution.
 
 ## Contributing
 
