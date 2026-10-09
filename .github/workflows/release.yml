@@ -144,105 +144,70 @@ jobs:
             printf 'APPLE_API_ISSUER=%s\n' "$APPLE_API_ISSUER"
           } >> "$GITHUB_ENV"
 
-      - name: Prepare Windows signing credentials
-        if: matrix.artifact == 'windows'
-        shell: pwsh
-        env:
-          WINDOWS_CSC_PFX_BASE64: ${{ secrets.WINDOWS_CSC_PFX_BASE64 }}
-          WINDOWS_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CSC_PFX_BASE64)) {
-            throw "Missing Windows signing secret: WINDOWS_CSC_PFX_BASE64"
-          }
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CSC_KEY_PASSWORD)) {
-            throw "Missing Windows signing secret: WINDOWS_CSC_KEY_PASSWORD"
-          }
-
-          $certificatePath = Join-Path $env:RUNNER_TEMP "drawsy-companion-signing.pfx"
-          $certificateBytes = [Convert]::FromBase64String($env:WINDOWS_CSC_PFX_BASE64)
-          if ($certificateBytes.Length -eq 0) {
-            throw "Windows signing certificate secret decoded to an empty file."
-          }
-          [IO.File]::WriteAllBytes($certificatePath, $certificateBytes)
-          Add-Content -Path $env:GITHUB_ENV -Value "WIN_CSC_LINK=$certificatePath"
-          Add-Content -Path $env:GITHUB_ENV -Value "WINDOWS_SIGNING_CERTIFICATE=$certificatePath"
-
       - name: Package installer
         if: matrix.artifact == 'linux'
         run: pnpm run package
 
-      - name: Package signed Windows installer
+      - name: Package Microsoft Store Windows AppX
         if: matrix.artifact == 'windows'
         env:
-          WIN_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
-        run: pnpm run package
+          STORE_APPX_IDENTITY_NAME: ${{ vars.STORE_APPX_IDENTITY_NAME }}
+          STORE_APPX_PUBLISHER: ${{ vars.STORE_APPX_PUBLISHER }}
+        run: pnpm run package:store
 
-      - name: Verify Windows package signatures
+      - name: Validate Microsoft Store AppX package
         if: matrix.artifact == 'windows'
         shell: pwsh
+        env:
+          STORE_APPX_IDENTITY_NAME: ${{ vars.STORE_APPX_IDENTITY_NAME }}
+          STORE_APPX_PUBLISHER: ${{ vars.STORE_APPX_PUBLISHER }}
         run: |
           $ErrorActionPreference = "Stop"
 
-          $installerFiles = @(Get-ChildItem -Path "release" -Filter "*.exe" -File)
-          if ($installerFiles.Count -ne 1) {
-            throw "Expected exactly one Windows installer EXE; found $($installerFiles.Count)."
+          $packages = @(Get-ChildItem -Path "release" -Filter "*.appx" -File)
+          if ($packages.Count -ne 1) {
+            throw "Expected exactly one Store AppX package; found $($packages.Count)."
           }
-          $installerSignature = Get-AuthenticodeSignature -FilePath $installerFiles[0].FullName
-          if ($installerSignature.Status -ne "Valid") {
-            throw "Windows installer signature is $($installerSignature.Status)."
+          $package = $packages[0]
+          $packageSignature = Get-AuthenticodeSignature -FilePath $package.FullName
+          if ($packageSignature.Status -ne "NotSigned") {
+            throw "Store submission package should be unsigned before Microsoft certification; found $($packageSignature.Status)."
           }
-          Write-Host "Installer Authenticode signature is valid."
+          Write-Host "The AppX package is intentionally unsigned before Microsoft Store certification."
 
-          $unpackedPath = Join-Path "release" "win-unpacked"
-          if (-not (Test-Path -LiteralPath $unpackedPath -PathType Container)) {
-            throw "Electron Builder did not leave the unpacked Windows application for verification."
-          }
-
-          $zipFiles = @(Get-ChildItem -Path "release" -Filter "*.zip" -File)
-          if ($zipFiles.Count -ne 1) {
-            throw "Expected exactly one Windows ZIP package; found $($zipFiles.Count)."
-          }
-          $zipExtractPath = Join-Path $env:RUNNER_TEMP "drawsy-companion-windows-zip"
-          Expand-Archive -LiteralPath $zipFiles[0].FullName -DestinationPath $zipExtractPath -Force
-
-          function Get-PortableExecutables([string] $Path) {
-            foreach ($file in Get-ChildItem -LiteralPath $Path -Recurse -File) {
-              $stream = [IO.File]::OpenRead($file.FullName)
-              try {
-                if ($stream.Length -lt 64) { continue }
-                $stream.Position = 0x3C
-                $offsetBytes = New-Object byte[] 4
-                if ($stream.Read($offsetBytes, 0, 4) -ne 4) { continue }
-                $peOffset = [BitConverter]::ToInt32($offsetBytes, 0)
-                if ($peOffset -lt 0 -or $peOffset -gt ($stream.Length - 4)) { continue }
-                $stream.Position = $peOffset
-                $signature = New-Object byte[] 4
-                if ($stream.Read($signature, 0, 4) -eq 4 -and
-                    $signature[0] -eq 0x50 -and $signature[1] -eq 0x45 -and
-                    $signature[2] -eq 0 -and $signature[3] -eq 0) {
-                  $file
-                }
-              } finally {
-                $stream.Dispose()
-              }
-            }
+          $windowsKits = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin"
+          $makeAppx = Get-ChildItem -LiteralPath $windowsKits -Filter "makeappx.exe" -Recurse -File |
+            Sort-Object FullName |
+            Select-Object -Last 1
+          if (-not $makeAppx) {
+            throw "Windows SDK makeappx.exe was not found for package validation."
           }
 
-          foreach ($payloadPath in @($unpackedPath, $zipExtractPath)) {
-            $portableExecutables = @(Get-PortableExecutables -Path $payloadPath)
-            if ($portableExecutables.Count -eq 0) {
-              throw "No PE files were found in $payloadPath."
-            }
-            foreach ($file in $portableExecutables) {
-              $signature = Get-AuthenticodeSignature -FilePath $file.FullName
-              if ($signature.Status -ne "Valid") {
-                throw "PE signature is $($signature.Status): $($file.FullName)"
-              }
-            }
-            Write-Host "Validated Authenticode signatures for $($portableExecutables.Count) PE files in $payloadPath."
+          $unpackedPath = Join-Path $env:RUNNER_TEMP "drawsy-companion-appx-unpacked"
+          & $makeAppx.FullName unpack /p $package.FullName /d $unpackedPath /o
+          if ($LASTEXITCODE -ne 0) {
+            throw "makeappx could not unpack the Store package."
           }
+          $manifestPath = Join-Path $unpackedPath "AppxManifest.xml"
+          if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            throw "The Store package does not contain AppxManifest.xml."
+          }
+
+          [xml]$manifest = Get-Content -LiteralPath $manifestPath -Raw
+          $identity = $manifest.Package.Identity
+          if ($identity.Name -ne $env:STORE_APPX_IDENTITY_NAME) {
+            throw "Package identity name does not match the configured Store identity."
+          }
+          if ($identity.Publisher -ne $env:STORE_APPX_PUBLISHER) {
+            throw "Package publisher does not match the configured Store publisher."
+          }
+          $version = (Get-Content -LiteralPath "package.json" -Raw | ConvertFrom-Json).version
+          if ($identity.Version -ne "$version.0") {
+            throw "Package version $($identity.Version) does not match package.json version $version."
+          }
+          Get-FileHash -LiteralPath $package.FullName -Algorithm SHA256 | Format-List
+          Write-Host "The AppX package structure, identity, publisher, and version are valid."
+          Write-Host "A Store submission package is signed by Microsoft after certification."
 
       - name: Build signed macOS application
         if: matrix.artifact == 'macos'
@@ -416,6 +381,7 @@ jobs:
             release/*.dmg
             release/*.zip
             release/*.exe
+            release/*.appx
             release/*.AppImage
             release/*.deb
           if-no-files-found: error
@@ -445,15 +411,6 @@ jobs:
             security delete-keychain "$MAC_SIGNING_KEYCHAIN" >/dev/null 2>&1 || true
           fi
 
-      - name: Clean up Windows signing credentials
-        if: ${{ always() && matrix.artifact == 'windows' }}
-        shell: pwsh
-        run: |
-          if ($env:WINDOWS_SIGNING_CERTIFICATE -and
-              (Test-Path -LiteralPath $env:WINDOWS_SIGNING_CERTIFICATE)) {
-            Remove-Item -LiteralPath $env:WINDOWS_SIGNING_CERTIFICATE -Force
-          }
-
   publish-release:
     name: Publish GitHub Release
     needs: package
@@ -464,12 +421,6 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: drawsy-companion-linux
-          path: release-artifacts
-
-      - name: Download Windows artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: drawsy-companion-windows
           path: release-artifacts
 
       - name: Download macOS artifacts
