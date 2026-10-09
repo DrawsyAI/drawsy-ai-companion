@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 190" role="img" aria-label="A hand drawn local computer connected to a Drawsy canvas">
+        <g fill="none" stroke="var(--illustration-ink, #2b2930)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M39 62 Q36 57 42 55 L129 57 Q134 57 133 63 L130 126 L40 125 Z"/>
+          <path d="M41 125 L25 140 Q19 148 30 148 L144 149 Q153 148 146 141 L130 126 M66 141 L109 141"/>
+          <path d="M182 21 Q179 17 188 17 L289 20 Q297 20 297 27 L293 110 Q294 117 286 117 L183 114 Q177 113 178 107 Z"/>
+          <path d="M182 36 L295 39" stroke="var(--illustration-rule, #e4e2e8)"/>
+          <path d="M138 86 C171 79 148 145 179 144 C204 144 217 134 220 119" stroke="var(--illustration-purple, #685ed8)" stroke-width="2"/>
+          <path d="M213 125 L221 118 L224 129" stroke="var(--illustration-purple, #685ed8)"/>
+          <path d="M57 78 L77 80 M57 89 L105 91 M57 101 L92 102" stroke="var(--illustration-muted, #77747d)"/>
+          <path d="M198 60 Q197 57 203 57 L221 58 L220 77 L198 76 Z" stroke="var(--illustration-purple, #685ed8)"/>
+          <path d="M236 83 Q235 80 240 80 L274 82 L273 100 L237 98 Z" stroke="var(--illustration-blue, #3e73b7)"/>
+          <path d="M221 67 Q256 64 255 79 M251 74 L255 80 L260 75" stroke="var(--illustration-muted, #77747d)"/>
+          <path d="M51 163 Q87 166 127 163 M197 131 L204 128 M284 133 L292 139 M166 35 L161 29" stroke="var(--illustration-rule, #e4e2e8)"/>
+        </g>
+        <circle cx="191" cy="28" r="2" fill="var(--illustration-purple, #685ed8)"/>
+        <circle cx="84" cy="117" r="2.5" fill="var(--illustration-green, #397b49)"/>
+      </svg>
