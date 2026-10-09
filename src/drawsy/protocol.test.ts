@@ -1657,9 +1657,10 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       false
     );
     assert.equal(
-      thread.params.config.mcp_servers["computer-use"].enabled,
-      false
+      thread.params.config.mcp_servers["computer-use"],
+      undefined
     );
+    assert.equal(thread.params.config.mcp_servers.inherited.command, "bad");
     assert.equal(thread.params.config.mcp_servers.node_repl.enabled, true);
     assert.equal(
       thread.params.config.mcp_servers.node_repl.command,

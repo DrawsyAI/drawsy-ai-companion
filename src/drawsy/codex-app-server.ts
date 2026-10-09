@@ -1334,8 +1334,16 @@ export class CodexAppServer {
         this.nativeChromeBrowserClientUrl
     );
     this.bundledSkills = await loadBundledSkills();
+    // Codex validates transport even when a server is disabled. Preserve the
+    // existing transport, and never invent empty entries for absent servers.
     const disabledMcpServers = Object.fromEntries(
-      Object.keys(currentMcpServers).map((name) => [name, { enabled: false }])
+      Object.entries(currentMcpServers).flatMap(([name, value]) => {
+        if (!isRecord(value)) return [];
+        const transport = typeof value.command === "string"
+          ? { command: value.command }
+          : typeof value.url === "string" ? { url: value.url } : null;
+        return transport ? [[name, { ...transport, enabled: false }]] : [];
+      })
     );
     const mcpEntry = resolveDrawsyMcpEntry(import.meta.url);
     const mcpProcess = drawsyMcpProcess(mcpEntry);
@@ -1356,7 +1364,6 @@ export class CodexAppServer {
       },
       mcp_servers: {
         ...disabledMcpServers,
-        "computer-use": { enabled: false },
         ...(this.nativeChromeAvailable && nativeChromeMcpConfig
           ? {
               node_repl: nativeChromeMcpConfig,
