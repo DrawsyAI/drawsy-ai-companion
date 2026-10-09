@@ -1678,6 +1678,9 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       "approve"
     );
     for (const tool of [
+      "render_diagram_code",
+      "create_or_update_connector",
+      "set_container_label",
       "create_kanban_card",
       "update_kanban_card",
       "move_kanban_card",
