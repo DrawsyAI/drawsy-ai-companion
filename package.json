@@ -1,6 +1,6 @@
 {
   "name": "@drawsy/companion",
-  "version": "0.1.27",
+  "version": "0.1.28",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.11.0",
@@ -38,9 +38,11 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.25.2",
+    "cross-spawn": "7.0.6",
     "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@types/cross-spawn": "6.0.6",
     "@types/node": "^22.0.0",
     "electron": "^39.0.0",
     "electron-builder": "^26.0.12",

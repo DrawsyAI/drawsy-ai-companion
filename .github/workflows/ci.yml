@@ -40,3 +40,15 @@ jobs:
 
       - name: Run static checks and tests
         run: pnpm run check
+
+      - name: Check session startup with native Windows Codex
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $codexInstall = Join-Path $env:RUNNER_TEMP "Drawsy Codex CLI"
+          npm install --prefix "$codexInstall" --no-audit --no-fund @openai/codex@0.162.1
+          if ($LASTEXITCODE -ne 0) { throw "CI-only Codex installation failed." }
+          $env:DRAWSY_CODEX_BIN = Join-Path $codexInstall "node_modules/.bin/codex.cmd"
+          node scripts/check-windows-codex.mjs
+          if ($LASTEXITCODE -ne 0) { throw "Native Windows Codex session check failed." }

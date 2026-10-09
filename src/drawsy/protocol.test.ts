@@ -20,6 +20,7 @@ import {
   recoveryDiagnosticFromAgentText,
 } from "./codex-app-server.js";
 import { createDrawsyBridge } from "./bridge.js";
+import { detectCodexBinary } from "./codex-binary.js";
 import {
   addCanvasRenderSemantics,
   parseAgentConnectorTurn,
@@ -540,7 +541,7 @@ test("live previews stay on loopback and use bounded geometry", () => {
 });
 
 test("bridge keeps Codex controls inside the selected-folder boundary", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "drawsy-bridge-test-"));
+  const root = await mkdtemp(path.join(tmpdir(), "drawsy bridge test "));
   const selectedFolder = path.join(root, "workspace");
   const requestLog = path.join(root, "requests.ndjson");
   const chromePluginRoot = path.join(root, "plugins", "chrome");
@@ -588,6 +589,10 @@ test("bridge keeps Codex controls inside the selected-folder boundary", async ()
 import readline from "node:readline";
 import { appendFile } from "node:fs/promises";
 const log = process.env.DRAWSY_TEST_REQUEST_LOG;
+if (process.argv.includes("--version")) {
+  console.log("codex-cli 0.162.1");
+  process.exit(0);
+}
 const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
 let materialized = false;
 let wasResumed = false;
@@ -726,12 +731,17 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
   const bridge = createDrawsyBridge({ port, allowedOrigins: [origin] });
 
   try {
+    assert.equal(detectCodexBinary()?.version, "0.162.1");
     await bridge.listen();
     const headers = { origin, "content-type": "application/json" };
     const picked = (await fetch(`${bridge.address}/v1/folders/pick`, {
       method: "POST",
       headers,
-    }).then((response) => response.json())) as {
+    }).then(async (response) => {
+      const body = await response.json();
+      assert.equal(response.status, 200, JSON.stringify(body));
+      return body;
+    })) as {
       selectionId: string;
       name: string;
     };
@@ -842,7 +852,11 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         surfaceKind: "presentation",
         conversationId,
       }),
-    }).then((response) => response.json())) as {
+    }).then(async (response) => {
+      const body = await response.json();
+      assert.equal(response.status, 201, JSON.stringify(body));
+      return body;
+    })) as {
       id: string;
       token: string;
       resumed: boolean;
@@ -1643,9 +1657,10 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       false
     );
     assert.equal(
-      thread.params.config.mcp_servers["computer-use"].enabled,
-      false
+      thread.params.config.mcp_servers["computer-use"],
+      undefined
     );
+    assert.equal(thread.params.config.mcp_servers.inherited.command, "bad");
     assert.equal(thread.params.config.mcp_servers.node_repl.enabled, true);
     assert.equal(
       thread.params.config.mcp_servers.node_repl.command,

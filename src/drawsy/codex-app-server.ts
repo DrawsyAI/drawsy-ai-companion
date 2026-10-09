@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import crossSpawn from "cross-spawn";
 import { randomUUID } from "node:crypto";
 import { access, readdir, readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
@@ -992,7 +993,10 @@ export class CodexAppServer {
         "Codex was not found. Install or launch Codex on this device, then refresh the Companion engine status."
       );
     }
-    this.process = spawn(
+    // Windows npm command shims need cmd.exe escaping; native executables do
+    // not. cross-spawn handles both without splitting paths at spaces.
+    const spawnCodex = process.platform === "win32" ? crossSpawn.spawn : spawn;
+    this.process = spawnCodex(
       codexBinary,
       [
         "app-server",
@@ -1020,7 +1024,7 @@ export class CodexAppServer {
       ],
       {
         stdio: ["pipe", "pipe", "pipe"],
-        shell: process.platform === "win32",
+        windowsHide: true,
         detached: session.isolateProcessGroup && process.platform !== "win32",
         env: codexEnvironment(session.previewPort),
       }
@@ -1330,8 +1334,16 @@ export class CodexAppServer {
         this.nativeChromeBrowserClientUrl
     );
     this.bundledSkills = await loadBundledSkills();
+    // Codex validates transport even when a server is disabled. Preserve the
+    // existing transport, and never invent empty entries for absent servers.
     const disabledMcpServers = Object.fromEntries(
-      Object.keys(currentMcpServers).map((name) => [name, { enabled: false }])
+      Object.entries(currentMcpServers).flatMap(([name, value]) => {
+        if (!isRecord(value)) return [];
+        const transport = typeof value.command === "string"
+          ? { command: value.command }
+          : typeof value.url === "string" ? { url: value.url } : null;
+        return transport ? [[name, { ...transport, enabled: false }]] : [];
+      })
     );
     const mcpEntry = resolveDrawsyMcpEntry(import.meta.url);
     const mcpProcess = drawsyMcpProcess(mcpEntry);
@@ -1352,7 +1364,6 @@ export class CodexAppServer {
       },
       mcp_servers: {
         ...disabledMcpServers,
-        "computer-use": { enabled: false },
         ...(this.nativeChromeAvailable && nativeChromeMcpConfig
           ? {
               node_repl: nativeChromeMcpConfig,

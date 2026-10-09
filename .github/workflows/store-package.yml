@@ -112,12 +112,29 @@ jobs:
           $validation | ConvertTo-Json | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Encoding utf8
           Write-Host "The package is structurally valid and unsigned for Microsoft Store certification. Microsoft signs it after certification."
 
+      - name: Build unsigned Windows ZIP for direct testing
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = (Get-Content -LiteralPath "package.json" -Raw | ConvertFrom-Json).version
+          pnpm exec electron-builder --win zip --x64 --publish never "--config.artifactName=Drawsy.Companion-$version-win-x64-unsigned.zip"
+          if ($LASTEXITCODE -ne 0) { throw "Windows ZIP packaging failed." }
+          $signature = Get-AuthenticodeSignature -FilePath "release/win-unpacked/drawsy-companion.exe"
+          if ($signature.Status -ne "NotSigned") {
+            throw "Expected the explicitly unsigned Windows test build; found $($signature.Status)."
+          }
+
+      - name: Check packaged Windows Codex session
+        shell: pwsh
+        run: ./scripts/check-packaged-windows.ps1
+
       - name: Upload Windows Store package
         uses: actions/upload-artifact@v4
         with:
           name: drawsyai-companion-store-windows-v${{ github.run_number }}
           path: |
             release/*.appx
+            release/*-win-x64-unsigned.zip
             release/package-validation.json
           if-no-files-found: error
           retention-days: 90
