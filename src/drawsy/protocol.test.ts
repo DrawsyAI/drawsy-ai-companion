@@ -540,7 +540,7 @@ test("live previews stay on loopback and use bounded geometry", () => {
 });
 
 test("bridge keeps Codex controls inside the selected-folder boundary", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "drawsy-bridge-test-"));
+  const root = await mkdtemp(path.join(tmpdir(), "drawsy bridge test "));
   const selectedFolder = path.join(root, "workspace");
   const requestLog = path.join(root, "requests.ndjson");
   const chromePluginRoot = path.join(root, "plugins", "chrome");
