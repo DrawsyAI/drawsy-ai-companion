@@ -35,7 +35,7 @@ Installers are published on the [GitHub Releases page](https://github.com/Drawsy
 | Platform | Release artifacts |
 | --- | --- |
 | macOS | `.dmg`, `.zip` |
-| Windows | unsigned `.zip` in v0.1.28; the next tagged release will also include an unsigned `.exe` installer |
+| Windows | unsigned `.exe` installer and `.zip` |
 | Linux | `.AppImage`, `.deb` |
 
 The PowerShell command installs the current unsigned ZIP and does not use the Store package. Windows may show a security warning; the installer does not bypass it.
