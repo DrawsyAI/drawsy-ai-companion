@@ -8,13 +8,25 @@ Drawsy Companion is the local desktop runtime that connects the Drawsy web clien
 
 It is a bridge, not an AI engine, hosted backend, or cloud service. The desktop app keeps the local bridge available in the background, detects the installed engines, starts a scoped local session when Drawsy requests one, and exposes the Drawsy MCP only to that session.
 
-## Terminal installation
+## Install from a terminal
 
-The public npm package [@drawsy/companion](https://www.npmjs.com/package/@drawsy/companion) is available for Windows, macOS, and Linux.
+Most people should use the one-line desktop installer. It downloads the latest app from GitHub, checks the downloaded file, installs it for the current user, and opens it. It does not need Node.js, npm, administrator access, or `sudo`:
 
-Install permanently with `npm install --global --ignore-scripts @drawsy/companion`, then run `drawsy-companion setup` to start the local server and enable startup at login. Node.js 22+ and npm are required. The CLI does not install Codex/OpenCode or change their login flow.
+macOS (Apple Silicon) or Linux (x64):
 
-See [CLI installation and commands](docs/cli-install.md) for Windows commands, background controls, updates, and removal. Public npm releases are published through this repository's GitHub workflow.
+```sh
+curl -fsSL https://raw.githubusercontent.com/DrawsyAI/drawsy-ai-companion/main/scripts/install.sh | sh
+```
+
+Windows (64-bit), in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/DrawsyAI/drawsy-ai-companion/main/scripts/install.ps1 | iex
+```
+
+Windows downloads are currently unsigned and may show a security warning. The installer does not bypass it. For people who want terminal-only background controls, the public npm package [@drawsy/companion](https://www.npmjs.com/package/@drawsy/companion) is also available. It requires Node.js 22 or later; install with npm, pnpm, or Bun, then run `drawsy-companion setup`. That starts the local server and enables startup when you sign in. The CLI does not install Codex/OpenCode or change their login flow.
+
+See [installation choices and CLI commands](docs/cli-install.md) for updates, background controls, and removal. Desktop app releases and npm package releases are separate GitHub workflows.
 
 ## Desktop downloads
 
@@ -23,10 +35,10 @@ Installers are published on the [GitHub Releases page](https://github.com/Drawsy
 | Platform | Release artifacts |
 | --- | --- |
 | macOS | `.dmg`, `.zip` |
-| Windows | unsigned `.zip` test build; `.appx` for Microsoft Store submission |
+| Windows | unsigned `.exe` installer and `.zip` |
 | Linux | `.AppImage`, `.deb` |
 
-For direct Windows testing, extract the ZIP and run `drawsy-companion.exe`. The ZIP is unsigned and Windows may show a security warning. The AppX is a Store submission package; Microsoft signs it after certification. It is not a signed installer for direct download.
+The PowerShell command installs the current unsigned ZIP and does not use the Store package. Windows may show a security warning; the installer does not bypass it.
 
 Install and launch the companion when you want to use local mode. It stays visible as a tray/menu-bar application while it is running and listens only on loopback. Windows opens a small welcome window with **Open Drawsy**, which opens https://drawsyai.com in your default browser, and the Companion, Codex, and OpenCode statuses. Status is refreshed when you reopen the window or choose **Refresh engine status** in the tray menu. Linux keeps its existing status window. Click the tray icon or choose **Open status window** to reopen it. Closing the window hides it back to the tray. It does not start automatically when you sign in. Choose **Quit Drawsy Companion** from the tray/menu-bar menu to stop local access; a terminal process is not required for normal use.
 

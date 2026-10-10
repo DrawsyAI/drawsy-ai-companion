@@ -1,23 +1,19 @@
 # Install Drawsy Companion with your coding agent
 
-Copy this prompt into Codex, Claude Code, Pi, OpenCode, or another coding agent running on the same computer as your browser:
+Copy this prompt into Codex, Claude Code, Pi, OpenCode, or another coding agent on the same computer as your browser:
 
 ```text
-Install and set up Drawsy Companion on this computer so Drawsy can connect to the coding tools already installed here. Complete the setup and verify it; do not only give me instructions.
+Install Drawsy Companion on this computer so Drawsy can connect to the Codex or OpenCode I already use. Complete the setup and verify what actually happened; do not only give me instructions.
 
-- Use this computer's terminal. If it is remote, SSH, a container, or CI, stop and tell me Companion must run on my own computer.
-- Install the permanent public npm package globally; do not use npx. Use no administrator or sudo access, and do not change shell security settings.
-- Check for Node.js 22 or newer and npm. If missing, use only an already-installed trusted package manager without administrator access; otherwise tell me the exact requirement.
-- Do not install, update, sign in to, or change Codex or OpenCode. Do not read or print secrets, ask for npm login, or purchase anything.
-- Check `drawsy-companion status` first if it is installed. If its CLI service is running or set to start at sign-in, run `drawsy-companion autostart disable` before updating it. On Windows, use `drawsy-companion.cmd`. Never stop the desktop app or an unknown process. If another Companion owns the local connection, leave it alone and report the conflict.
+- Use this computer's terminal. If this is a remote machine, container, or CI environment, stop and tell me Companion must run on my own computer.
+- Prefer the desktop app; it does not need Node.js, npm, administrator access, or sudo. In 64-bit Windows PowerShell, run: irm https://raw.githubusercontent.com/DrawsyAI/drawsy-ai-companion/main/scripts/install.ps1 | iex
+- On Apple Silicon macOS or x64 Linux, run in Terminal: curl -fsSL https://raw.githubusercontent.com/DrawsyAI/drawsy-ai-companion/main/scripts/install.sh | sh
+- The installer downloads the latest stable GitHub release, checks its SHA-256 checksum, installs for my account, and opens the app. Do not install the Store package. Windows builds are unsigned: do not bypass a security warning. If Windows blocks the app or needs my approval, stop and explain that clearly.
+- If this computer or processor is unsupported, stop and name it. Do not install a different package or switch to the Store version.
+- Do not install, update, sign in to, or change Codex or OpenCode. Do not change their existing login or read secrets.
+- The desktop app and terminal CLI use the same local connection. Do not start the CLI alongside the desktop app. Never stop the desktop app or an unknown process to make installation work. If another Companion is using the connection, leave it alone and report the conflict.
+- Only use the terminal CLI if I specifically ask for a windowless background service. It needs Node.js 22 or later and an already-installed npm, pnpm, or Bun. Do not install Node.js or another package manager. First check CLI status; only stop/update a confirmed CLI service, and disable its sign-in startup before updating. If the desktop app or another Companion is using the connection, do not stop it or continue. Install @drawsy/companion globally with the package manager already present, skip package scripts, then run drawsy-companion setup (on Windows use npm.cmd/pnpm.cmd/bun and drawsy-companion.cmd).
+- For the desktop app, verify it opened and http://127.0.0.1:3031/health reports ok=true. For the CLI, verify drawsy-companion status reports running and sign-in startup enabled. Read Codex/OpenCode status from the Companion window or CLI and report it exactly. If a check cannot be made, say so; do not claim success without evidence.
 
-Install the latest package (Windows PowerShell uses `npm.cmd`):
-- Windows: `npm.cmd install --global --ignore-scripts @drawsy/companion@latest`
-- macOS/Linux: `npm install --global --ignore-scripts @drawsy/companion@latest`
-
-Then run `drawsy-companion setup` (Windows: `drawsy-companion.cmd setup`). This starts Companion and enables startup when I sign in. If setup fails or finds another Companion, do not stop other processes or claim success. Use status and, if needed, logs to identify the blocker. If status says it is starting, wait briefly and check again.
-
-Verify status shows the CLI Companion running and startup at sign-in enabled. Report the installed version and the Codex/OpenCode availability and versions exactly as Companion reports them; do not call an unsupported or missing tool available. Never say setup is done unless both running status and sign-in startup are confirmed.
-
-Keep the final report short: say whether setup succeeded, the version and tool statuses, then—if successful—tell me to go to https://drawsyai.com, sign in, open a canvas, and start its AI chat. If it did not finish, name the blocker and the next step.
+Keep your final report short: say whether installation completed, the installed version if you could verify it, the local connection check, and Codex/OpenCode availability exactly as Companion reports it. If it completed, tell me to visit https://drawsyai.com, sign in, open a canvas, and start AI chat. If it did not, name the blocker and the next step.
 ```
