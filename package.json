@@ -13,7 +13,7 @@
   "main": "dist/app/main.js",
   "desktopName": "drawsy-companion",
   "bin": {
-    "drawsy-companion": "dist/drawsy/bridge-main.js",
+    "drawsy-companion": "dist/drawsy/cli.js",
     "drawsy-ai-mcp": "dist/drawsy/mcp.js"
   },
   "scripts": {
