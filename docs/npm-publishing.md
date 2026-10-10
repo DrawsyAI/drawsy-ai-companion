@@ -1,5 +1,19 @@
 # npm publishing
 
+## How updates reach users
+
+```text
+Code change + version bump on main
+              ↓
+Run “Publish Companion CLI to npm” in GitHub Actions
+              ↓
+GitHub builds and publishes that version to npm
+              ↓
+Users install it or choose when to update with npm
+```
+
+Node runs the CLI. npm installs and updates it. Windows Task Scheduler, macOS launchd, or Linux systemd starts it at sign-in when the user enables that option. Codex and OpenCode stay installed and signed in as before. Desktop releases do not publish npm versions; the optional GitHub CLI download is a separate workflow.
+
 The Companion CLI is published from `.github/workflows/npm-publish.yml`. The workflow accepts two authentication methods:
 
 - `trusted` (default) publishes the built tarball through npm trusted publishing with GitHub OIDC and provenance.

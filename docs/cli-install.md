@@ -26,7 +26,7 @@ Once installed, run:
 drawsy-companion setup
 ```
 
-`setup` starts Companion in the background and enables startup when you sign in. Then open [Drawsy](https://drawsyai.com), the URL allowed by the Companion connection policy. For app details, see [app.drawsyai.com](https://app.drawsyai.com). Closing the terminal does not stop the background server.
+Running `drawsy-companion` by itself shows the local status without changing startup settings. `setup` starts Companion in the background and enables startup when you sign in. Then open [Drawsy](https://drawsyai.com), the URL allowed by the Companion connection policy. Closing the terminal does not stop the background server.
 
 To install and set up in one line:
 
@@ -46,10 +46,10 @@ The Windows `.cmd` commands avoid requiring a PowerShell script execution policy
 
 ### Optional GitHub tarball source
 
-If you prefer to install a published GitHub release tarball, use its versioned `.tgz` asset. For CLI version 0.1.28:
+If you prefer to install a GitHub release tarball, use its versioned `.tgz` asset. For CLI version 0.1.30:
 
 ```sh
-npm install --global --ignore-scripts https://github.com/DrawsyAI/drawsy-ai-companion/releases/download/cli-v0.1.28/drawsy-companion-0.1.28.tgz
+npm install --global --ignore-scripts https://github.com/DrawsyAI/drawsy-ai-companion/releases/download/cli-v0.1.30/drawsy-companion-0.1.30.tgz
 ```
 
 The tarball is built by this repository's CLI release workflow and is available after its draft release is published. Use the tarball asset, not the desktop ZIP or AppX.
@@ -72,13 +72,15 @@ The desktop app and CLI use the same local server address. Quit the desktop app 
 
 ## Update or remove
 
-Run `drawsy-companion autostart disable`, then `drawsy-companion stop` before updating from the public npm registry:
+The CLI does not update itself. npm distributes the package; Node runs it. To update, stop the running server first. If startup at sign-in is enabled, `autostart disable` also stops it:
 
 ```sh
+drawsy-companion autostart disable
 npm install --global --ignore-scripts @drawsy/companion@latest
+drawsy-companion setup
 ```
 
-Run `drawsy-companion setup` after installation to restore background startup. This also refreshes the saved Node.js executable path if your Node installation changed.
+Run `setup` after installation only if you want Companion to start at sign-in. Otherwise, run `drawsy-companion start` when you want it for the current login session. If startup was already disabled, use `drawsy-companion stop` before installing the update instead.
 
 Before removing the package, disable startup at login, stop Companion, and remove the package:
 
