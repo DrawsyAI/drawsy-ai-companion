@@ -12,6 +12,7 @@ import { createWriteStream } from "node:fs";
 import { createDrawsyBridge } from "./bridge.js";
 import { readLocalEngineStatus } from "./engine-status.js";
 import { enableAutostart, disableAutostart, autostartEnabled } from "./cli-autostart.js";
+import { printDashboard, printHelp, startDrawsyIndicator } from "./cli-ui.js";
 
 const directory = path.join(homedir(), ".drawsy-companion");
 const lockDirectory = path.join(directory, "runtime.lock");
@@ -58,6 +59,38 @@ const bridgePresent = async () => {
     const result = await response.json() as { service?: string; version?: string };
     return response.ok && result.service === "drawsy-ai-bridge" ? result : null;
   } catch { return null; }
+};
+
+type StatusOptions = {
+  includeLinks?: boolean;
+  animate?: boolean;
+  hint?: string;
+  missingState?: "starting" | "stopped";
+};
+
+const showStatus = async (options: StatusOptions = {}) => {
+  const running = await control("status");
+  const other = running ? null : await bridgePresent();
+  const autostart = await autostartEnabled();
+  const companion = running ? "running" : other ? "other" : options.missingState ?? "stopped";
+  const hint = options.hint ?? (other
+    ? "Quit the desktop app before starting CLI mode."
+    : running
+      ? autostart ? "Ready for Drawsy." : "Run drawsy-companion setup to keep it ready at sign-in."
+      : companion === "starting"
+        ? "Startup is enabled; run drawsy-companion status to check readiness."
+        : "Run drawsy-companion setup to start now and at sign-in.");
+
+  await printDashboard({
+    version: manifest.version,
+    companion,
+    companionVersion: running?.version ?? other?.version,
+    autostart,
+    engines: readLocalEngineStatus(),
+    includeLinks: options.includeLinks,
+    hint,
+  }, options.animate);
+  return { running, other, autostart };
 };
 
 const acquire = async () => {
@@ -124,7 +157,14 @@ const serve = async (backgroundLog: boolean) => {
     await writeFile(recordPath, JSON.stringify({ pid: process.pid, port: address.port, token, version: manifest.version }), { mode: 0o600 });
     process.once("SIGINT", () => { void shutdown(); });
     process.once("SIGTERM", () => { void shutdown(); });
-    console.log(`Drawsy Companion ${manifest.version} running at ${bridge.address}`);
+    await printDashboard({
+      version: manifest.version,
+      companion: "running",
+      companionVersion: manifest.version,
+      engines: readLocalEngineStatus(),
+      includeLinks: !backgroundLog,
+      hint: backgroundLog ? `Local bridge ready at ${bridge.address}.` : "Press Ctrl+C to stop.",
+    });
     process.send?.({ ready: true });
     process.disconnect?.();
   } catch (error) {
@@ -139,10 +179,14 @@ const serve = async (backgroundLog: boolean) => {
 
 const start = async () => {
   const existing = await control("status");
-  if (existing) { console.log(`Companion ${existing.version} is already running.`); return; }
+  if (existing) {
+    await showStatus({ includeLinks: true });
+    return;
+  }
   if (await bridgePresent()) throw new Error("The desktop app or another Companion server is running. Quit it first; this command will not replace it.");
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const output = await open(logPath, "a", 0o600);
+  const indicator = startDrawsyIndicator("Starting local Companion");
   try {
     await new Promise<void>((resolve, reject) => {
       const child = spawn(process.execPath, [entry, "serve"], {
@@ -159,29 +203,24 @@ const start = async () => {
         clearTimeout(timer); child.unref(); resolve();
       });
     });
+  } catch (error) {
+    indicator.stop("Startup did not finish.");
+    throw error;
   } finally { await output.close(); }
-  console.log(`Companion ${manifest.version} is running in the background. Open https://drawsyai.com`);
+  indicator.stop("Local Companion started.");
+  await showStatus({ includeLinks: true });
 };
 
-const help = () => console.log(`Drawsy Companion ${manifest.version}
-
-  setup              Start now and automatically when you sign in
-  start              Start in the background for this login session
-  serve              Run visibly in this terminal (Ctrl+C stops it)
-  stop               Stop the CLI server; keep login startup configured
-  status             Show server and automatic startup status
-  logs               Show the latest local log output
-  autostart enable   Enable startup at login
-  autostart disable  Disable startup at login and stop its managed job
-
-Requires Node.js 22 or later. Codex/OpenCode installation and login stay unchanged.
-Update or remove the package with npm after disabling automatic startup.
-Only the CLI's authenticated process is stopped; the desktop app is never killed.`);
-
 try {
-  const [command = "help", option, ...extra] = process.argv.slice(2);
+  const [command = "welcome", option, ...extra] = process.argv.slice(2);
   if (extra.length || (option && command !== "autostart" && !(command === "serve" && option === "--background-log"))) throw new Error("Unexpected arguments. Use drawsy-companion help.");
   switch (command) {
+    case "welcome":
+      await showStatus({
+        includeLinks: true,
+        animate: true,
+      });
+      break;
     case "serve": await serve(option === "--background-log"); break;
     case "start": await start(); break;
     case "stop": {
@@ -190,17 +229,11 @@ try {
         for (let attempt = 0; attempt < 50 && alive(running.pid); attempt++) await new Promise((resolve) => setTimeout(resolve, 100));
         if (alive(running.pid)) throw new Error("Shutdown is still in progress. Check status before restarting.");
       }
-      console.log(running ? "Companion CLI stopped." : "Companion CLI is not running.");
+      await showStatus({ hint: running ? "Companion CLI stopped." : "Companion CLI is not running." });
       break;
     }
     case "status": {
-      const running = await control("status");
-      const other = running ? null : await bridgePresent();
-      console.log(running ? `Companion CLI ${running.version} running.` : other ? `Another Companion server ${other.version ?? ""} is running.` : "Companion is not running.");
-      console.log(`Startup at login: ${await autostartEnabled() ? "enabled" : "disabled"}.`);
-      for (const engine of readLocalEngineStatus()) {
-        console.log(`${engine.name}: ${engine.id === "opencode" && process.platform === "win32" ? "not supported by Companion on Windows" : engine.installed ? `available${engine.version ? ` (${engine.version})` : ""}` : "not found"}.`);
-      }
+      await showStatus();
       break;
     }
     case "logs": {
@@ -223,17 +256,31 @@ try {
       const action = command === "setup" ? "enable" : option;
       if (action === "disable") {
         await control("stop");
-        await disableAutostart(); console.log("Startup at login disabled; CLI shutdown requested.");
+        await disableAutostart();
+        await showStatus({ hint: "Startup at sign-in disabled." });
       } else if (action === "enable") {
-        if (await autostartEnabled() && await control("status")) { console.log("Companion running; startup at login enabled."); break; }
+        if (await autostartEnabled() && await control("status")) {
+          await showStatus({ includeLinks: true, hint: "Ready at sign-in." });
+          break;
+        }
         if (await control("status") || await bridgePresent()) throw new Error("Stop Companion first, then run setup. Existing sessions will not be interrupted automatically.");
         await mkdir(directory, { recursive: true, mode: 0o700 });
-        await enableAutostart(process.execPath, entry);
-        console.log("Startup at login enabled. Run drawsy-companion status to check readiness; open https://drawsyai.com when running.");
+        const indicator = startDrawsyIndicator("Setting up sign-in startup");
+        try {
+          await enableAutostart(process.execPath, entry);
+        } catch (error) {
+          indicator.stop("Setup could not be completed.");
+          throw error;
+        }
+        indicator.stop("Startup at sign-in enabled.");
+        await showStatus({
+          includeLinks: true,
+          missingState: "starting",
+        });
       } else throw new Error("Use autostart enable or autostart disable.");
       break;
     }
-    case "help": case "--help": case "-h": help(); break;
+    case "help": case "--help": case "-h": await printHelp(manifest.version); break;
     case "--version": console.log(manifest.version); break;
     default: throw new Error(`Unknown command: ${command}. Use drawsy-companion help.`);
   }
