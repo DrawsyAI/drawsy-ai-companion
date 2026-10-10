@@ -30,14 +30,18 @@ try {
     type: "module",
     description: "Drawsy's local Companion server and background command-line controls",
     license: sourcePackage.license,
-    author: sourcePackage.author,
+    author: { ...sourcePackage.author, email: "a@drawsyai.com" },
     repository: {
       type: "git",
       url: "git+https://github.com/DrawsyAI/drawsy-ai-companion.git"
     },
-    homepage: "https://github.com/DrawsyAI/drawsy-ai-companion",
+    homepage: "https://drawsyai.com",
     bugs: { url: "https://github.com/DrawsyAI/drawsy-ai-companion/issues" },
     engines: { node: ">=22" },
+    publishConfig: {
+      access: "public",
+      registry: "https://registry.npmjs.org/"
+    },
     bin: {
       "drawsy-companion": "dist/drawsy/cli.js",
       "drawsy-ai-mcp": "dist/drawsy/mcp.js"

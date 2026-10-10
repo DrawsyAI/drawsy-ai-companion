@@ -1,26 +1,24 @@
 # Drawsy Companion from your terminal
 
-The CLI runs the same local Companion server without the desktop app. It connects Drawsy to your existing Codex/OpenCode installation. It does not install either engine or change their login flow.
+The CLI runs the same local Companion server without the desktop app. It connects Drawsy to your existing Codex/OpenCode installation. It does not install either engine, sign you in, or change their authentication settings.
 
 ## Requirements
 
 - Windows, macOS, or Linux.
 - Node.js 22 or later with npm, installed for your user account.
-- A published Companion CLI release from [this repository](https://github.com/DrawsyAI/drawsy-ai-companion/releases).
+- The public npm package `@drawsy/companion`, once it has been published and Drawsy's ownership of the `@drawsy` npm scope is confirmed.
 
-No Microsoft Store approval or paid app signing certificate is required for this Node.js CLI package. This does not change the signing requirements of the separate desktop app.
+The npm commands below are not live until the package is published to the public registry and scope ownership is confirmed. A public package does not require a paid private npm plan. No paid app signing certificate or Microsoft Store approval is required for this Node.js CLI package; the separate desktop app has its own release requirements.
 
 ## Install permanently
 
-For CLI version 0.1.28, the permanent install command is:
+After the availability conditions above are met, install the public npm package:
 
 ```sh
-npm install --global --ignore-scripts https://github.com/DrawsyAI/drawsy-ai-companion/releases/download/cli-v0.1.28/drawsy-companion-0.1.28.tgz
+npm install --global --ignore-scripts @drawsy/companion
 ```
 
-The package is installed permanently; npx is not needed. Downloads come from GitHub, not an npm registry publication. For a newer release titled **Companion CLI**, use that release's `.tgz` download link instead. npm must be configured so your user account can install global packages; this flow does not request administrator access.
-
-Use the versioned `.tgz` link, not the desktop ZIP or AppX. CLI release download links become available only after the draft release is published.
+This installs the CLI globally; npx is not needed. npm must be configured so your user account can install global packages; this flow does not request administrator access.
 
 Once installed, run:
 
@@ -28,23 +26,33 @@ Once installed, run:
 drawsy-companion setup
 ```
 
-`setup` starts Companion in the background and enables startup when you sign in. Then open [drawsyai.com](https://drawsyai.com). Closing the terminal does not stop the background server.
+`setup` starts Companion in the background and enables startup when you sign in. Then open [Drawsy](https://drawsyai.com), the URL allowed by the Companion connection policy. For app details, see [app.drawsyai.com](https://app.drawsyai.com). Closing the terminal does not stop the background server.
 
-To install and set up in one line, after the release is published:
+To install and set up in one line, after the public npm package is published and the `@drawsy` scope ownership is confirmed:
 
 macOS/Linux:
 
 ```sh
-npm install --global --ignore-scripts https://github.com/DrawsyAI/drawsy-ai-companion/releases/download/cli-v0.1.28/drawsy-companion-0.1.28.tgz && drawsy-companion setup
+npm install --global --ignore-scripts @drawsy/companion && drawsy-companion setup
 ```
 
 Windows PowerShell:
 
 ```powershell
-npm.cmd install --global --ignore-scripts https://github.com/DrawsyAI/drawsy-ai-companion/releases/download/cli-v0.1.28/drawsy-companion-0.1.28.tgz; if ($LASTEXITCODE -eq 0) { drawsy-companion.cmd setup }
+npm.cmd install --global --ignore-scripts @drawsy/companion; if ($LASTEXITCODE -eq 0) { drawsy-companion.cmd setup }
 ```
 
 The Windows `.cmd` commands avoid requiring a PowerShell script execution policy change.
+
+### Optional GitHub tarball source
+
+If you prefer to install a published GitHub release tarball, use its versioned `.tgz` asset. For CLI version 0.1.28:
+
+```sh
+npm install --global --ignore-scripts https://github.com/DrawsyAI/drawsy-ai-companion/releases/download/cli-v0.1.28/drawsy-companion-0.1.28.tgz
+```
+
+The tarball is built by this repository's CLI release workflow and is available after its draft release is published. Use the tarball asset, not the desktop ZIP or AppX.
 
 ## Commands
 
@@ -64,7 +72,13 @@ The desktop app and CLI use the same local server address. Quit the desktop app 
 
 ## Update or remove
 
-Run `drawsy-companion autostart disable`, then `drawsy-companion stop` before installing a newer versioned `.tgz` with the same npm install command. Run `drawsy-companion setup` after installation to restore background startup. This also refreshes the saved Node.js executable path if your Node installation changed.
+Run `drawsy-companion autostart disable`, then `drawsy-companion stop` before updating from the public npm registry:
+
+```sh
+npm install --global --ignore-scripts @drawsy/companion@latest
+```
+
+Run `drawsy-companion setup` after installation to restore background startup. This also refreshes the saved Node.js executable path if your Node installation changed.
 
 Before removing the package, disable startup at login, stop Companion, and remove the package:
 
@@ -78,6 +92,8 @@ This does not uninstall your Codex/OpenCode installation.
 
 ## Release preparation
 
-The **Build Companion CLI release** GitHub workflow builds and packages a selected commit from this repository. It runs no tests and launches no server. It uploads the tarball and `CLI-SHA256SUMS` to a draft release named `cli-v` followed by the package version. Existing published assets are never replaced. Review and manually test the draft before publishing it.
+Before the first public publication, a maintainer must control the npm account and `@drawsy` scope and complete the account-authenticated initial publication needed to configure npm trusted publishing. Future public package releases use this repository's **Publish Companion CLI to npm** GitHub workflow. It requires the current `main` commit, rejects a mismatched existing CLI version tag, builds and packages the CLI, and publishes the package with npm provenance. It runs no tests and launches no app or server.
+
+The **Build Companion CLI release** GitHub workflow builds and packages a selected commit, runs no tests, and launches no app or server. It uploads the tarball and `CLI-SHA256SUMS` to a draft release named `cli-v` followed by the package version. Review and manually verify the draft before publishing it; existing published releases are never replaced. This GitHub tarball is an optional install source.
 
 The package contains the compiled local server, bundled Drawsy skills, and npm runtime dependency declarations. It excludes Electron, the desktop UI, build dependencies, personal configuration, and credentials. npm installs the declared runtime dependencies when installing the tarball.

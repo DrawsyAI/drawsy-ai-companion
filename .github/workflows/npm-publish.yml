@@ -1,0 +1,107 @@
+name: Publish Companion CLI to npm
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: companion-npm-publish
+  cancel-in-progress: false
+
+jobs:
+  publish-cli:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the selected source commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Require the current main branch and matching CLI tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo '::error::Dispatch this workflow from main.'
+            exit 1
+          fi
+
+          git fetch origin main --tags --force
+          main_sha="$(git rev-parse refs/remotes/origin/main)"
+          if [[ "$GITHUB_SHA" != "$main_sha" ]]; then
+            echo '::error::This run is not for the current main commit. Dispatch again from the latest main.'
+            exit 1
+          fi
+
+          version="$(node -p "require('./package.json').version")"
+          cli_tag="cli-v${version}"
+          if git show-ref --verify --quiet "refs/tags/$cli_tag"; then
+            tagged_sha="$(git rev-parse "refs/tags/$cli_tag^{commit}")"
+            if [[ "$tagged_sha" != "$GITHUB_SHA" ]]; then
+              echo "::error::${cli_tag} points to another source commit. Bump the CLI version before publishing."
+              exit 1
+            fi
+          fi
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.11.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Install the latest npm CLI and verify OIDC requirements
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global npm@latest
+          node --version
+          npm_version="$(npm --version)"
+          echo "npm ${npm_version}"
+          NPM_VERSION="$npm_version" node -e '
+            const [major, minor, patch] = process.env.NPM_VERSION.split(".").map(Number);
+            if (major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))) {
+              console.error("npm 11.5.1 or later is required for trusted publishing.");
+              process.exit(1);
+            }
+          '
+
+      - name: Install build dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Build CLI runtime
+        run: pnpm run build
+
+      - name: Package the CLI tarball
+        run: node scripts/package-cli.mjs
+
+      - name: Preserve the exact CLI package and checksum
+        uses: actions/upload-artifact@v4
+        with:
+          name: drawsy-companion-cli-${{ github.run_id }}
+          path: |
+            release/cli/*.tgz
+            release/cli/CLI-SHA256SUMS
+          if-no-files-found: error
+
+      - name: Publish the CLI tarball with OIDC and provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          tarballs=(release/cli/*.tgz)
+          if (( ${#tarballs[@]} != 1 )); then
+            echo '::error::Expected exactly one CLI package tarball.'
+            exit 1
+          fi
+          npm publish "${tarballs[0]}" --access public --provenance
