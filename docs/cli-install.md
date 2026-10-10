@@ -6,13 +6,13 @@ The CLI runs the same local Companion server without the desktop app. It connect
 
 - Windows, macOS, or Linux.
 - Node.js 22 or later with npm, installed for your user account.
-- The public npm package `@drawsy/companion`, once it has been published and Drawsy's ownership of the `@drawsy` npm scope is confirmed.
+- The public npm package [@drawsy/companion](https://www.npmjs.com/package/@drawsy/companion).
 
-The npm commands below are not live until the package is published to the public registry and scope ownership is confirmed. A public package does not require a paid private npm plan. No paid app signing certificate or Microsoft Store approval is required for this Node.js CLI package; the separate desktop app has its own release requirements.
+The package is published under Drawsy's npm account. A public package does not require a paid private npm plan. No paid app signing certificate or Microsoft Store approval is required for this Node.js CLI package; the separate desktop app has its own release requirements.
 
 ## Install permanently
 
-After the availability conditions above are met, install the public npm package:
+Install the public npm package:
 
 ```sh
 npm install --global --ignore-scripts @drawsy/companion
@@ -28,7 +28,7 @@ drawsy-companion setup
 
 `setup` starts Companion in the background and enables startup when you sign in. Then open [Drawsy](https://drawsyai.com), the URL allowed by the Companion connection policy. For app details, see [app.drawsyai.com](https://app.drawsyai.com). Closing the terminal does not stop the background server.
 
-To install and set up in one line, after the public npm package is published and the `@drawsy` scope ownership is confirmed:
+To install and set up in one line:
 
 macOS/Linux:
 
@@ -92,7 +92,7 @@ This does not uninstall your Codex/OpenCode installation.
 
 ## Release preparation
 
-Before the first public publication, a maintainer must control the npm account and `@drawsy` scope. Follow [the npm publishing guide](npm-publishing.md) to stage and approve the initial package, then configure GitHub trusted publishing. Future public package releases use this repository's **Publish Companion CLI to npm** GitHub workflow. It requires the current `main` commit, rejects a mismatched existing CLI version tag, builds and packages the CLI, and publishes the package with npm provenance. It runs no tests and launches no app or server.
+The first public version, 0.1.28, was built and uploaded by GitHub Actions and approved through npm's staged publication flow. Follow [the npm publishing guide](https://github.com/DrawsyAI/drawsy-ai-companion/blob/main/docs/npm-publishing.md) for GitHub trusted publishing setup. Future public package releases use this repository's **Publish Companion CLI to npm** GitHub workflow. It requires the current `main` commit, rejects a mismatched existing CLI version tag, builds and packages the CLI, and publishes the package with npm provenance. It runs no tests and launches no app or server.
 
 The **Build Companion CLI release** GitHub workflow builds and packages a selected commit, runs no tests, and launches no app or server. It uploads the tarball and `CLI-SHA256SUMS` to a draft release named `cli-v` followed by the package version. Review and manually verify the draft before publishing it; existing published releases are never replaced. This GitHub tarball is an optional install source.
 
