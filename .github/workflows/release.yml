@@ -148,75 +148,6 @@ jobs:
         if: matrix.artifact == 'linux'
         run: pnpm run package
 
-      - name: Package Microsoft Store Windows AppX
-        if: matrix.artifact == 'windows'
-        env:
-          STORE_APPX_IDENTITY_NAME: ${{ vars.STORE_APPX_IDENTITY_NAME }}
-          STORE_APPX_PUBLISHER: ${{ vars.STORE_APPX_PUBLISHER }}
-          STORE_APPX_PUBLISHER_DISPLAY_NAME: ${{ vars.STORE_APPX_PUBLISHER_DISPLAY_NAME }}
-        run: pnpm run package:store
-
-      - name: Validate Microsoft Store AppX package
-        if: matrix.artifact == 'windows'
-        shell: pwsh
-        env:
-          STORE_APPX_IDENTITY_NAME: ${{ vars.STORE_APPX_IDENTITY_NAME }}
-          STORE_APPX_PUBLISHER: ${{ vars.STORE_APPX_PUBLISHER }}
-          STORE_APPX_PUBLISHER_DISPLAY_NAME: ${{ vars.STORE_APPX_PUBLISHER_DISPLAY_NAME }}
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          $packages = @(Get-ChildItem -Path "release" -Filter "*.appx" -File)
-          if ($packages.Count -ne 1) {
-            throw "Expected exactly one Store AppX package; found $($packages.Count)."
-          }
-          $package = $packages[0]
-          $packageSignature = Get-AuthenticodeSignature -FilePath $package.FullName
-          if ($packageSignature.Status -ne "NotSigned") {
-            throw "Store submission package should be unsigned before Microsoft certification; found $($packageSignature.Status)."
-          }
-          Write-Host "The AppX package is intentionally unsigned before Microsoft Store certification."
-
-          $windowsKits = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin"
-          $makeAppx = Get-ChildItem -LiteralPath $windowsKits -Filter "makeappx.exe" -Recurse -File |
-            Sort-Object FullName |
-            Select-Object -Last 1
-          if (-not $makeAppx) {
-            throw "Windows SDK makeappx.exe was not found for package validation."
-          }
-
-          $unpackedPath = Join-Path $env:RUNNER_TEMP "drawsy-companion-appx-unpacked"
-          & $makeAppx.FullName unpack /p $package.FullName /d $unpackedPath /o
-          if ($LASTEXITCODE -ne 0) {
-            throw "makeappx could not unpack the Store package."
-          }
-          $manifestPath = Join-Path $unpackedPath "AppxManifest.xml"
-          if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
-            throw "The Store package does not contain AppxManifest.xml."
-          }
-
-          [xml]$manifest = Get-Content -LiteralPath $manifestPath -Raw
-          $identity = $manifest.Package.Identity
-          if ($identity.Name -ne $env:STORE_APPX_IDENTITY_NAME) {
-            throw "Package identity name does not match the configured Store identity."
-          }
-          if ($identity.Publisher -ne $env:STORE_APPX_PUBLISHER) {
-            throw "Package publisher does not match the configured Store publisher."
-          }
-          if ($manifest.Package.Properties.DisplayName -ne "DrawsyAI Companion") {
-            throw "Package display name does not match DrawsyAI Companion."
-          }
-          if ($manifest.Package.Properties.PublisherDisplayName -ne $env:STORE_APPX_PUBLISHER_DISPLAY_NAME) {
-            throw "Package publisher display name does not match Partner Center."
-          }
-          $version = (Get-Content -LiteralPath "package.json" -Raw | ConvertFrom-Json).version
-          if ($identity.Version -ne "$version.0") {
-            throw "Package version $($identity.Version) does not match package.json version $version."
-          }
-          Get-FileHash -LiteralPath $package.FullName -Algorithm SHA256 | Format-List
-          Write-Host "The AppX package structure, identity, publisher, and version are valid."
-          Write-Host "A Store submission package is signed by Microsoft after certification."
-
       - name: Build signed macOS application
         if: matrix.artifact == 'macos'
         shell: bash
@@ -381,19 +312,43 @@ jobs:
             --publish never \
             --config.mac.notarize=false
 
-      - name: Package unsigned Windows ZIP for direct testing
+      - name: Package unsigned Windows installer and ZIP
         if: matrix.artifact == 'windows'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $version = (Get-Content -LiteralPath "package.json" -Raw | ConvertFrom-Json).version
+          $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
+
+          pnpm clean
+          if ($LASTEXITCODE -ne 0) { throw "Cleaning old package output failed." }
+          pnpm build
+          if ($LASTEXITCODE -ne 0) { throw "Windows application build failed." }
+
+          pnpm exec electron-builder --win nsis --x64 --publish never "--config.artifactName=Drawsy.Companion-$version-win-x64-unsigned-setup.exe"
+          if ($LASTEXITCODE -ne 0) { throw "Windows installer packaging failed." }
           pnpm exec electron-builder --win zip --x64 --publish never "--config.artifactName=Drawsy.Companion-$version-win-x64-unsigned.zip"
           if ($LASTEXITCODE -ne 0) { throw "Windows ZIP packaging failed." }
+
+          $installerPath = Join-Path "release" "Drawsy.Companion-$version-win-x64-unsigned-setup.exe"
+          $archivePath = Join-Path "release" "Drawsy.Companion-$version-win-x64-unsigned.zip"
+          if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {
+            throw "The unsigned Windows installer was not created."
+          }
+          if (-not (Test-Path -LiteralPath $archivePath -PathType Leaf)) {
+            throw "The unsigned Windows ZIP was not created."
+          }
+
+          $installerSignature = Get-AuthenticodeSignature -FilePath $installerPath
+          if ($installerSignature.Status -ne "NotSigned") {
+            throw "The GitHub Windows installer must remain unsigned; found $($installerSignature.Status)."
+          }
           $executable = Join-Path "release/win-unpacked" "drawsy-companion.exe"
           $signature = Get-AuthenticodeSignature -FilePath $executable
           if ($signature.Status -ne "NotSigned") {
-            throw "Expected the explicitly unsigned Windows test build; found $($signature.Status)."
+            throw "The GitHub Windows application must remain unsigned; found $($signature.Status)."
           }
+          Write-Host "The Windows installer, ZIP, and packaged application are intentionally unsigned."
 
       - name: Check packaged Windows Codex session
         if: matrix.artifact == 'windows'
@@ -408,7 +363,6 @@ jobs:
             release/*.dmg
             release/*.zip
             release/*.exe
-            release/*.appx
             release/*.AppImage
             release/*.deb
           if-no-files-found: error
@@ -495,7 +449,6 @@ jobs:
             release-artifacts/*.dmg
             release-artifacts/*.zip
             release-artifacts/*.exe
-            release-artifacts/*.appx
             release-artifacts/*.AppImage
             release-artifacts/*.deb
             release-artifacts/SHA256SUMS
