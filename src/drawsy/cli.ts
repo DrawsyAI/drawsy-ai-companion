@@ -53,9 +53,8 @@ const control = async (operation: "status" | "stop") => {
 };
 
 const bridgePresent = async () => {
-  const port = Number(process.env.PORT || 3031);
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(1000) });
+    const response = await fetch("http://127.0.0.1:3031/health", { signal: AbortSignal.timeout(1000) });
     const result = await response.json() as { service?: string; version?: string };
     return response.ok && result.service === "drawsy-ai-bridge" ? result : null;
   } catch { return null; }
@@ -66,29 +65,21 @@ const acquire = async () => {
   try { await mkdir(lockDirectory, { mode: 0o700 }); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    const recovery = `${lockDirectory}.recovery`;
-    try { await mkdir(recovery, { mode: 0o700 }); }
-    catch { throw new Error("Another Companion command is starting. Try again shortly."); }
-    try {
-      const record = await readRuntime();
-      if (record && alive(record.pid)) throw new Error("Companion CLI is already running. Use drawsy-companion status.");
-      const info = await stat(lockDirectory);
-      if (!record && Date.now() - info.mtimeMs < 30_000) throw new Error("Companion is starting. Try again shortly.");
-      await rm(lockDirectory, { recursive: true });
-      await mkdir(lockDirectory, { mode: 0o700 });
-    } finally { await rm(recovery, { recursive: true, force: true }); }
+    // Called only after acquiring the fixed loopback listener: competing servers
+    // cannot reach this cleanup concurrently.
+    const record = await readRuntime();
+    if (record && alive(record.pid)) throw new Error("Companion CLI is already running. Use drawsy-companion status.");
+    const info = await stat(lockDirectory);
+    if (!record && Date.now() - info.mtimeMs < 30_000) throw new Error("Companion is starting. Try again shortly.");
+    await rm(lockDirectory, { recursive: true });
+    await mkdir(lockDirectory, { mode: 0o700 });
   }
 };
 
 const serve = async (backgroundLog: boolean) => {
-  await acquire();
-  if (backgroundLog) {
-    const output = createWriteStream(logPath, { flags: "a", mode: 0o600 });
-    output.on("error", () => { process.stderr.write("Companion could not write its background log.\n"); });
-    globalThis.console = new Console({ stdout: output, stderr: output });
-  }
   let bridge: ReturnType<typeof createDrawsyBridge> | undefined;
   let closing = false;
+  let ownsLock = false;
   const manager = createServer((request, response) => {
     if (request.headers.origin || request.method !== "POST" || request.headers.authorization !== `Bearer ${token}`) {
       response.writeHead(403).end(); return;
@@ -102,17 +93,28 @@ const serve = async (backgroundLog: boolean) => {
   const shutdown = async () => {
     if (closing) return;
     closing = true;
-    await bridge?.close();
-    await new Promise<void>((resolve) => manager.close(() => resolve()));
-    await rm(lockDirectory, { recursive: true, force: true });
-    process.exit(0);
+    let exitCode = 0;
+    try { await bridge?.close(); }
+    catch { exitCode = 1; }
+    finally {
+      await new Promise<void>((resolve) => manager.close(() => resolve()));
+      if (ownsLock) await rm(lockDirectory, { recursive: true, force: true });
+      process.exit(exitCode);
+    }
   };
   try {
     if (await bridgePresent()) throw new Error("The desktop app or another Companion server is running. Quit it before starting the CLI.");
     // The distributed CLI always uses the production web origin policy and loopback.
     process.env.NODE_ENV = "production";
-    bridge = createDrawsyBridge({ host: "127.0.0.1", version: manifest.version });
+    bridge = createDrawsyBridge({ host: "127.0.0.1", port: 3031, version: manifest.version });
     await bridge.listen();
+    await acquire();
+    ownsLock = true;
+    if (backgroundLog) {
+      const output = createWriteStream(logPath, { flags: "a", mode: 0o600 });
+      output.on("error", () => { process.stderr.write("Companion could not write its background log.\n"); });
+      globalThis.console = new Console({ stdout: output, stderr: output });
+    }
     await new Promise<void>((resolve, reject) => {
       manager.once("error", reject);
       manager.listen(0, "127.0.0.1", resolve);
@@ -126,9 +128,11 @@ const serve = async (backgroundLog: boolean) => {
     process.send?.({ ready: true });
     process.disconnect?.();
   } catch (error) {
-    await bridge?.close();
+    // close also clears the bridge's timer when listen failed. Preserve the
+    // original startup failure (including an occupied port) during cleanup.
+    await bridge?.close().catch(() => undefined);
     manager.close();
-    await rm(lockDirectory, { recursive: true, force: true });
+    if (ownsLock) await rm(lockDirectory, { recursive: true, force: true });
     throw error;
   }
 };
