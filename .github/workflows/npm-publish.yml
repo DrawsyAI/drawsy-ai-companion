@@ -2,17 +2,25 @@ name: Publish Companion CLI to npm
 
 on:
   workflow_dispatch:
+    inputs:
+      auth_method:
+        description: npm authentication method
+        required: true
+        type: choice
+        default: trusted
+        options:
+          - trusted
+          - bootstrap
 
 permissions:
   contents: read
-  id-token: write
 
 concurrency:
   group: companion-npm-publish
   cancel-in-progress: false
 
 jobs:
-  publish-cli:
+  prepare-cli:
     runs-on: ubuntu-latest
     steps:
       - name: Check out the selected source commit
@@ -57,24 +65,7 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
           package-manager-cache: false
-
-      - name: Install the latest npm CLI and verify OIDC requirements
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm install --global npm@latest
-          node --version
-          npm_version="$(npm --version)"
-          echo "npm ${npm_version}"
-          NPM_VERSION="$npm_version" node -e '
-            const [major, minor, patch] = process.env.NPM_VERSION.split(".").map(Number);
-            if (major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))) {
-              console.error("npm 11.5.1 or later is required for trusted publishing.");
-              process.exit(1);
-            }
-          '
 
       - name: Install build dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
@@ -94,6 +85,43 @@ jobs:
             release/cli/CLI-SHA256SUMS
           if-no-files-found: error
 
+  publish-cli:
+    if: inputs.auth_method == 'trusted'
+    needs: prepare-cli
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The npm CLI uses GitHub's ID token to generate provenance.
+      id-token: write
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Install npm CLI and verify trusted publishing requirements
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global npm@latest
+          npm_version="$(npm --version)"
+          echo "npm ${npm_version}"
+          NPM_VERSION="$npm_version" node -e '
+            const [major, minor, patch] = process.env.NPM_VERSION.split(".").map(Number);
+            if (major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))) {
+              console.error("npm 11.5.1 or later is required for trusted publishing.");
+              process.exit(1);
+            }
+          '
+
+      - name: Download the exact CLI package and checksum
+        uses: actions/download-artifact@v4
+        with:
+          name: drawsy-companion-cli-${{ github.run_id }}
+          path: release/cli
+
       - name: Publish the CLI tarball with OIDC and provenance
         shell: bash
         run: |
@@ -105,3 +133,58 @@ jobs:
             exit 1
           fi
           npm publish "${tarballs[0]}" --access public --provenance
+
+  bootstrap-cli:
+    if: inputs.auth_method == 'bootstrap'
+    needs: prepare-cli
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Staging authenticates with the secret; npm uses the ID token for provenance.
+      id-token: write
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Install npm CLI and verify staged publishing requirements
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global npm@latest
+          npm_version="$(npm --version)"
+          echo "npm ${npm_version}"
+          NPM_VERSION="$npm_version" node -e '
+            const [major, minor, patch] = process.env.NPM_VERSION.split(".").map(Number);
+            if (major < 11 || (major === 11 && minor < 15)) {
+              console.error("npm 11.15.0 or later is required for staged publishing.");
+              process.exit(1);
+            }
+          '
+
+      - name: Download the exact CLI package and checksum
+        uses: actions/download-artifact@v4
+        with:
+          name: drawsy-companion-cli-${{ github.run_id }}
+          path: release/cli
+
+      - name: Stage the first public CLI package for review
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
+            echo '::error::Set the NPM_BOOTSTRAP_TOKEN repository secret to a stage-only npm token.'
+            exit 1
+          fi
+          shopt -s nullglob
+          tarballs=(release/cli/*.tgz)
+          if (( ${#tarballs[@]} != 1 )); then
+            echo '::error::Expected exactly one CLI package tarball.'
+            exit 1
+          fi
+          npm stage publish "${tarballs[0]}" --access public --provenance --ignore-scripts

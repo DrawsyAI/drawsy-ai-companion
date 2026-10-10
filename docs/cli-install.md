@@ -92,7 +92,7 @@ This does not uninstall your Codex/OpenCode installation.
 
 ## Release preparation
 
-Before the first public publication, a maintainer must control the npm account and `@drawsy` scope and complete the account-authenticated initial publication needed to configure npm trusted publishing. Future public package releases use this repository's **Publish Companion CLI to npm** GitHub workflow. It requires the current `main` commit, rejects a mismatched existing CLI version tag, builds and packages the CLI, and publishes the package with npm provenance. It runs no tests and launches no app or server.
+Before the first public publication, a maintainer must control the npm account and `@drawsy` scope. Follow [the npm publishing guide](npm-publishing.md) to stage and approve the initial package, then configure GitHub trusted publishing. Future public package releases use this repository's **Publish Companion CLI to npm** GitHub workflow. It requires the current `main` commit, rejects a mismatched existing CLI version tag, builds and packages the CLI, and publishes the package with npm provenance. It runs no tests and launches no app or server.
 
 The **Build Companion CLI release** GitHub workflow builds and packages a selected commit, runs no tests, and launches no app or server. It uploads the tarball and `CLI-SHA256SUMS` to a draft release named `cli-v` followed by the package version. Review and manually verify the draft before publishing it; existing published releases are never replaced. This GitHub tarball is an optional install source.
 
