@@ -10,9 +10,9 @@ It is a bridge, not an AI engine, hosted backend, or cloud service. The desktop 
 
 ## Terminal installation
 
-The public npm package `@drawsy/companion` is being prepared. Registry installation becomes available after npm account/scope setup and the first publication; it is not live yet.
+The public npm package [@drawsy/companion](https://www.npmjs.com/package/@drawsy/companion) is available for Windows, macOS, and Linux.
 
-Once published, install permanently with `npm install --global --ignore-scripts @drawsy/companion`, then run `drawsy-companion setup` to start the local server and enable startup at login. Node.js 22+ and npm are required. The CLI does not install Codex/OpenCode or change their login flow.
+Install permanently with `npm install --global --ignore-scripts @drawsy/companion`, then run `drawsy-companion setup` to start the local server and enable startup at login. Node.js 22+ and npm are required. The CLI does not install Codex/OpenCode or change their login flow.
 
 See [CLI installation and commands](docs/cli-install.md) for Windows commands, background controls, updates, and removal. Public npm releases are published through this repository's GitHub workflow.
 
