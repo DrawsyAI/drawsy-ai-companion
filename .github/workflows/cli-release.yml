@@ -1,0 +1,100 @@
+name: Build Companion CLI release
+
+on:
+  push:
+    branches:
+      - "cli-release/**"
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Repository branch, tag, or commit to package
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: companion-cli-release
+  cancel-in-progress: false
+
+jobs:
+  package-cli:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out this Companion repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.11.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install build dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Build CLI runtime
+        run: pnpm run build
+
+      - name: Package CLI without install hooks
+        run: node scripts/package-cli.mjs
+
+      - name: Preserve CLI package
+        uses: actions/upload-artifact@v4
+        with:
+          name: drawsy-companion-cli
+          path: |
+            release/cli/*.tgz
+            release/cli/CLI-SHA256SUMS
+          if-no-files-found: error
+
+      - name: Upload to a draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          tag="cli-v${version}"
+          source_sha="$(git rev-parse HEAD)"
+
+          # The cli-v prefix avoids the existing desktop v* release workflow.
+          if gh release view "$tag" --json isDraft,targetCommitish > "$RUNNER_TEMP/cli-release.json"; then
+            if [[ "$(node -p "JSON.parse(require('fs').readFileSync(process.env.RUNNER_TEMP + '/cli-release.json', 'utf8')).isDraft")" != "true" ]]; then
+              echo '::error::This CLI release is already published. Bump the version instead of replacing it.'
+              exit 1
+            fi
+            if [[ "$(node -p "JSON.parse(require('fs').readFileSync(process.env.RUNNER_TEMP + '/cli-release.json', 'utf8')).targetCommitish")" != "$source_sha" ]]; then
+              echo '::error::Existing CLI draft targets another commit. Use a new version or remove the stale draft.'
+              exit 1
+            fi
+            if git rev-parse --verify "refs/tags/$tag" >/dev/null 2>&1; then
+              if [[ "$(git rev-parse "refs/tags/$tag^{commit}")" != "$source_sha" ]]; then
+                echo '::error::Existing CLI tag points at another commit. Bump the version.'
+                exit 1
+              fi
+            fi
+          else
+            cat > "$RUNNER_TEMP/cli-release-notes.md" <<'NOTES'
+          Permanent command-line installation of Drawsy Companion from this repository.
+
+          Requires Node.js 22 or later and npm. No desktop app, Electron, or paid signing certificate is required for this CLI package. Codex and OpenCode are not included.
+
+          This package has not been tested. Follow docs/cli-install.md for installation and manual checks before publishing.
+          NOTES
+            gh release create "$tag" --draft --target "$source_sha" \
+              --title "Companion CLI $version" \
+              --notes-file "$RUNNER_TEMP/cli-release-notes.md"
+          fi
+          gh release upload "$tag" release/cli/*.tgz release/cli/CLI-SHA256SUMS --clobber
