@@ -4,7 +4,7 @@ Choose the desktop app unless you specifically want to control Companion from a 
 
 ## Desktop app: one line, no Node.js needed
 
-Open Terminal on macOS/Linux or PowerShell on Windows and paste the matching command. It downloads the latest app from GitHub, checks its SHA-256 checksum, installs it for your account, and opens Companion. It needs no Node.js, npm, administrator access, or `sudo`, and it does not install the Microsoft Store package.
+Open Terminal on macOS/Linux, or Command Prompt or PowerShell on Windows. The desktop app does not need Node.js, npm, administrator access, or `sudo`.
 
 macOS (Apple Silicon) or Linux (x64):
 
@@ -12,13 +12,15 @@ macOS (Apple Silicon) or Linux (x64):
 curl -fsSL https://raw.githubusercontent.com/DrawsyAI/drawsy-ai-companion/main/scripts/install.sh | sh
 ```
 
-Windows (64-bit), in PowerShell:
+Windows (64-bit), in Command Prompt or PowerShell:
 
-```powershell
-irm https://raw.githubusercontent.com/DrawsyAI/drawsy-ai-companion/main/scripts/install.ps1 | iex
+```cmd
+winget install --id 9PD4MGJ9BW4F --source msstore
 ```
 
-The Windows app is currently unsigned, so Windows may show a security warning. The installer does not bypass it. To update the desktop app, close Companion and run the same command again. Supported builds are Apple Silicon macOS, 64-bit Windows, and x64 Linux.
+This installs the Store version. You can also [open the Microsoft Store listing](https://apps.microsoft.com/detail/9PD4MGJ9BW4F). The GitHub release page still includes an unsigned Windows `.exe` and `.zip` for people who specifically need those files; Windows may show a security warning for them.
+
+The macOS/Linux command downloads the latest stable GitHub release, checks its SHA-256 checksum, installs it for your account, and opens Companion. To update the desktop app, close Companion and run the same install command again. To update the Windows Store app, update it through Microsoft Store. Supported builds are Apple Silicon macOS, 64-bit Windows, and x64 Linux.
 
 The desktop app stays available in the tray/menu bar while it is open. It does not start automatically when you sign in. Closing its window leaves it running in the background; choose **Quit Drawsy Companion** from the tray/menu to stop it.
 
@@ -79,7 +81,7 @@ Neither install route installs, updates, or signs in to Codex or OpenCode. Keep 
 
 ## Release sources
 
-- Desktop installers are built and published to this repository's [GitHub Releases](https://github.com/DrawsyAI/drawsy-ai-companion/releases/latest). Install scripts fetch the latest stable release and its checksum file.
+- macOS and Linux desktop installers are built and published to this repository's [GitHub Releases](https://github.com/DrawsyAI/drawsy-ai-companion/releases/latest). The release page also retains the unsigned Windows `.exe` and `.zip` alternate. The Windows Store package is built separately and submitted through Partner Center.
 - The npm CLI is published separately by the repository's **Publish Companion CLI to npm** GitHub workflow. Installing or updating the desktop app does not publish or update the npm package.
 - The CLI release tarball excludes Electron, the desktop window, build dependencies, personal configuration, and credentials.
 

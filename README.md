@@ -10,7 +10,7 @@ It is a bridge, not an AI engine, hosted backend, or cloud service. The desktop 
 
 ## Install from a terminal
 
-Most people should use the one-line desktop installer. It downloads the latest app from GitHub, checks the downloaded file, installs it for the current user, and opens it. It does not need Node.js, npm, administrator access, or `sudo`:
+Most people should install the desktop app. It does not need Node.js, npm, administrator access, or `sudo`:
 
 macOS (Apple Silicon) or Linux (x64):
 
@@ -18,27 +18,27 @@ macOS (Apple Silicon) or Linux (x64):
 curl -fsSL https://raw.githubusercontent.com/DrawsyAI/drawsy-ai-companion/main/scripts/install.sh | sh
 ```
 
-Windows (64-bit), in PowerShell:
+Windows (64-bit), in Command Prompt or PowerShell:
 
-```powershell
-irm https://raw.githubusercontent.com/DrawsyAI/drawsy-ai-companion/main/scripts/install.ps1 | iex
+```cmd
+winget install --id 9PD4MGJ9BW4F --source msstore
 ```
 
-Windows downloads are currently unsigned and may show a security warning. The installer does not bypass it. For people who want terminal-only background controls, the public npm package [@drawsy/companion](https://www.npmjs.com/package/@drawsy/companion) is also available. It requires Node.js 22 or later; install with npm, pnpm, or Bun, then run `drawsy-companion setup`. That starts the local server and enables startup when you sign in. The CLI does not install Codex/OpenCode or change their login flow.
+The Store app is also available at [apps.microsoft.com/detail/9PD4MGJ9BW4F](https://apps.microsoft.com/detail/9PD4MGJ9BW4F). macOS/Linux use the GitHub installer command above. For people who want terminal-only background controls, the public npm package [@drawsy/companion](https://www.npmjs.com/package/@drawsy/companion) is also available. It requires Node.js 22 or later; install with npm, pnpm, or Bun, then run `drawsy-companion setup`. That starts the local server and enables startup when you sign in. The CLI does not install Codex/OpenCode or change their login flow.
 
 See [installation choices and CLI commands](docs/cli-install.md) for updates, background controls, and removal. Desktop app releases and npm package releases are separate GitHub workflows.
 
 ## Desktop downloads
 
-Installers are published on the [GitHub Releases page](https://github.com/DrawsyAI/drawsy-ai-companion/releases/latest).
+macOS and Linux installers are published on the [GitHub Releases page](https://github.com/DrawsyAI/drawsy-ai-companion/releases/latest). The Windows Store version is on the [Microsoft Store](https://apps.microsoft.com/detail/9PD4MGJ9BW4F).
 
 | Platform | Release artifacts |
 | --- | --- |
 | macOS | `.dmg`, `.zip` |
-| Windows | unsigned `.exe` installer and `.zip` |
+| Windows | Microsoft Store; unsigned `.exe` and `.zip` alternatives |
 | Linux | `.AppImage`, `.deb` |
 
-The PowerShell command installs the current unsigned ZIP and does not use the Store package. Windows may show a security warning; the installer does not bypass it.
+The GitHub Windows `.exe` and `.zip` are unsigned and may show a security warning. The Store version is the recommended Windows install.
 
 Install and launch the companion when you want to use local mode. It stays visible as a tray/menu-bar application while it is running and listens only on loopback. Windows opens a small welcome window with **Open Drawsy**, which opens https://drawsyai.com in your default browser, and the Companion, Codex, and OpenCode statuses. Status is refreshed when you reopen the window or choose **Refresh engine status** in the tray menu. Linux keeps its existing status window. Click the tray icon or choose **Open status window** to reopen it. Closing the window hides it back to the tray. It does not start automatically when you sign in. Choose **Quit Drawsy Companion** from the tray/menu-bar menu to stop local access; a terminal process is not required for normal use.
 
@@ -177,15 +177,17 @@ Configure these repository secrets before pushing a release tag:
 - `APPLE_API_ISSUER` — the App Store Connect issuer UUID.
 - `MAC_RECOVERY_ENCRYPTION_KEY` — a random high-entropy secret used only to encrypt resumable Mac release artifacts.
 
-The workflow reconstructs the `.p8` only in the macOS runner’s temporary directory, passes its path to `notarytool`, and fails before packaging if any Mac signing secret is missing. Before waiting on Apple, it preserves the signed app and notarization metadata in an encrypted GitHub Actions recovery artifact; the plaintext app and credentials are not exposed through the public repository. If Apple holds a submission longer than the bounded wait, do not rerun the release and create a duplicate submission. After Apple reports `Accepted`, run **Finalize Delayed macOS Release** with the source release workflow run ID; it restores the exact signed app, staples and validates the ticket, packages the DMG and ZIP, and publishes the complete release. Existing Windows and Linux releases remain unsigned; the Windows Store package is built as AppX, while Linux artifacts remain unsigned.
+The workflow reconstructs the `.p8` only in the macOS runner’s temporary directory, passes its path to `notarytool`, and fails before packaging if any Mac signing secret is missing. Before waiting on Apple, it preserves the signed app and notarization metadata in an encrypted GitHub Actions recovery artifact; the plaintext app and credentials are not exposed through the public repository. If Apple holds a submission longer than the bounded wait, do not rerun the release and create a duplicate submission. After Apple reports `Accepted`, run **Finalize Delayed macOS Release** with the source release workflow run ID; it restores the exact signed app, staples and validates the ticket, packages the DMG and ZIP, and publishes the complete release. Windows `.exe`/`.zip` and Linux artifacts remain unsigned. The Store package is built separately and submitted through Partner Center.
 
-Windows release builds create a Microsoft Store AppX package. Configure these repository variables with the identity values shown by Partner Center after the product type is set to MSIX/AppX:
+The Store package workflow reads these repository variables with the identity values shown by Partner Center:
 
 - `STORE_APPX_IDENTITY_NAME` — the Store package identity name.
 - `STORE_APPX_PUBLISHER` — the exact Store publisher value.
 - `STORE_APPX_PUBLISHER_DISPLAY_NAME` — the publisher display name shown by Partner Center.
 
-These values are public package metadata, not signing credentials. Run **Build DrawsyAI Companion Store Package** from GitHub Actions to build only the Windows x64 package. It checks the package signature state and manifest name, identity, publisher, and version, then retains the `.appx` file as an Actions artifact for Partner Center upload. Microsoft signs the package after Store certification. No Windows certificate or signing secret is required for Store distribution.
+These values are public package metadata, not signing credentials. Run **Build DrawsyAI Companion Store Package** from the current `main` branch to build only the Windows x64 package. It checks the package signature state and manifest name, identity, publisher, and version, then retains the `.appx` file as an Actions artifact for Partner Center upload. Microsoft handles package signing during Store certification. No Windows certificate or signing secret is required for Store distribution. The workflow does not submit the package to Partner Center.
+
+See [`.github/RELEASE_GUIDE.md`](.github/RELEASE_GUIDE.md) for the release steps and which steps still need a maintainer.
 
 ## Contributing
 
