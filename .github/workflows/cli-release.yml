@@ -1,16 +1,7 @@
 name: Build Companion CLI release
 
 on:
-  push:
-    branches:
-      - "cli-release/**"
   workflow_dispatch:
-    inputs:
-      source_ref:
-        description: Repository branch, tag, or commit to package
-        required: true
-        default: main
-        type: string
 
 permissions:
   contents: write
@@ -26,8 +17,22 @@ jobs:
       - name: Check out this Companion repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source_ref || github.sha }}
           fetch-depth: 0
+
+      - name: Require the latest main branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo '::error::Dispatch this workflow from main.'
+            exit 1
+          fi
+          git fetch origin main --tags
+          main_sha="$(git rev-parse refs/remotes/origin/main)"
+          if [[ "$(git rev-parse HEAD)" != "$main_sha" ]]; then
+            echo '::error::This run is not for the latest main commit. Dispatch it again from current main.'
+            exit 1
+          fi
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
