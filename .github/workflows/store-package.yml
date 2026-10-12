@@ -25,7 +25,7 @@ jobs:
             echo '::error::Run this workflow from main.'
             exit 1
           fi
-          git fetch origin main --tags
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
           main_sha="$(git rev-parse refs/remotes/origin/main)"
           if [[ "$GITHUB_SHA" != "$main_sha" ]]; then
             echo '::error::This run is not for the latest main commit. Dispatch it again from current main.'
