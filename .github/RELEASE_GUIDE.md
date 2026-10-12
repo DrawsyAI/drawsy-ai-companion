@@ -5,14 +5,14 @@ Drawsy Companion has separate release lanes. A desktop release does not publish 
 ## Before a release
 
 - Merge changes into `main` through a pull request.
-- Update `package.json` and `pnpm-lock.yaml` together so their versions match.
+- Update the version in `package.json`. The current pnpm lockfile does not record the root package version; update it only when dependency metadata changes.
 - Prepare releases from `main`. Release workflows must reject source commits that are not part of `main`.
 - Never move or replace an existing version tag. Never force-push. Use a new version if a release needs correction.
 - A maintainer must complete platform checks before publishing; a successful build is not a user-install check.
 
 ## Desktop app on GitHub
 
-Create and push a new tag matching the package version, such as `v1.2.3`. The **Release Companion** workflow builds the desktop artifacts and publishes them with `SHA256SUMS` to the GitHub release.
+Create and push a new tag matching the package version, such as `v1.2.3`. The **Release Companion** workflow builds the desktop artifacts and publishes them with `SHA256SUMS` to the GitHub release. To rebuild an existing tag after a workflow failure, run **Release Companion** manually from `main` and enter that existing tag. The workflow checks that the tag is on `main` and matches the version inside it; never move or replace a tag.
 
 - macOS: signed and notarized `.dmg` and `.zip`. Apple credentials stay in GitHub Actions secrets.
 - Windows: unsigned `.exe` and `.zip`. These remain an alternate download; the Microsoft Store is the recommended install.
