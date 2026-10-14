@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/DrawsyAI/drawsy-ai-companion/actions/workflows/ci.yml/badge.svg)](https://github.com/DrawsyAI/drawsy-ai-companion/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/DrawsyAI/drawsy-ai-companion?display_name=tag&sort=semver)](https://github.com/DrawsyAI/drawsy-ai-companion/releases/latest)
+[![npm version](https://img.shields.io/npm/v/%40drawsy%2Fcompanion?label=npm)](https://www.npmjs.com/package/@drawsy/companion)
 [![MIT License](https://img.shields.io/badge/license-MIT-685ED8.svg)](LICENSE)
 
 Drawsy Companion is the local desktop runtime that connects the Drawsy web client to Codex or OpenCode already installed on the user's device.

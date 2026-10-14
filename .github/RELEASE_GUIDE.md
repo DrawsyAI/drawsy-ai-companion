@@ -1,6 +1,6 @@
 # Release guide
 
-Drawsy Companion has separate release lanes. A desktop release does not publish the npm package or submit an update to Microsoft Store.
+The GitHub desktop release also publishes the matching CLI version to npm after the desktop release workflow succeeds. Microsoft Store submission remains separate and manual.
 
 ## Before a release
 
@@ -32,7 +32,11 @@ Store submission can be automated after a maintainer configures Microsoft's Part
 
 ## npm CLI
 
-Run **Publish Companion CLI to npm** manually from the latest `main` commit after the npm package version is ready. The normal route uses npm trusted publishing from GitHub Actions and creates npm provenance while this source repository is public. If the source repository becomes private, provenance will stop working and npm will no longer be able to verify the public source link. The optional bootstrap route is for an authorized recovery only; never add or print npm tokens in workflow files or logs.
+Pushing a new version tag from `main` starts **Release Companion**. After that workflow succeeds, **Publish Companion CLI to npm** builds the CLI from the same tag, checks that its version matches, and publishes `@drawsy/companion` to npm with provenance. If that exact npm version is already present, the workflow skips it. A failed npm publish does not undo the desktop release; maintainers can run this workflow manually from the latest `main` commit to recover.
+
+The GitHub **Packages** tab only lists packages published to GitHub's own registry. The installable CLI remains on npm, so it does not appear in that tab. A second copy in GitHub Packages would require GitHub sign-in to install, so we do not publish one.
+
+The normal route uses npm trusted publishing from GitHub Actions and creates npm provenance while this source repository is public. If the source repository becomes private, provenance will stop working and npm will no longer be able to verify the public source link. The optional bootstrap route is for an authorized recovery only; never add or print npm tokens in workflow files or logs.
 
 npm, pnpm, and Bun install the same public CLI package on all three platforms. The CLI requires Node.js and is separate from the desktop app. It does not install or change Codex/OpenCode.
 
@@ -40,8 +44,8 @@ npm, pnpm, and Bun install the same public CLI package on all three platforms. T
 
 | Release | Start | Output | Maintainer action |
 | --- | --- | --- | --- |
-| Desktop | Push a new `v*` version tag from `main` | GitHub macOS, Windows, and Linux assets | Review the release page; finish delayed Apple notarization if needed |
+| Desktop | Push a new `v*` version tag from `main` | GitHub macOS, Windows, and Linux assets; matching npm CLI version after success | Review both release pages; finish delayed Apple notarization if needed |
 | Microsoft Store | Manually run the Store package workflow from `main` | `.appx` Actions artifact | Upload and submit in Partner Center; monitor certification |
-| npm CLI | Manually run the npm workflow from current `main` | Public `@drawsy/companion` package | Confirm package version and npm publication |
+| npm CLI | Auto after a successful desktop tag release; manual workflow dispatch for recovery | Public `@drawsy/companion` package | Confirm npm publication; manually recover only if it fails |
 
-No single workflow currently performs all three lanes. Do not describe a Store submission as automated until Partner Center credentials and a publishing workflow are configured and verified.
+The desktop and npm release run in sequence; Store submission remains manual. Do not describe a Store submission as automated until Partner Center credentials and a publishing workflow are configured and verified.
