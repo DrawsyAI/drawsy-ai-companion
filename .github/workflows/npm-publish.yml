@@ -11,6 +11,11 @@ on:
         options:
           - trusted
           - bootstrap
+  workflow_run:
+    workflows:
+      - Release Companion
+    types:
+      - completed
 
 permissions:
   contents: read
@@ -21,40 +26,92 @@ concurrency:
 
 jobs:
   prepare-cli:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       startsWith(github.event.workflow_run.head_branch, 'v'))
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.validate-source.outputs.version }}
     steps:
       - name: Check out the selected source commit
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           fetch-depth: 0
 
-      - name: Require the current main branch and matching CLI tag
+      - name: Validate release source and version
+        id: validate-source
         shell: bash
+        env:
+          UPSTREAM_EVENT: ${{ github.event.workflow_run.event }}
+          UPSTREAM_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          UPSTREAM_TAG: ${{ github.event.workflow_run.head_branch }}
+          UPSTREAM_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
 
-          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
-            echo '::error::Dispatch this workflow from main.'
-            exit 1
-          fi
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_run" ]]; then
+            if [[ "$UPSTREAM_EVENT" != "push" || "$UPSTREAM_REPOSITORY" != "$GITHUB_REPOSITORY" ]]; then
+              echo '::error::Automatic npm publishing only accepts a tag release from this repository.'
+              exit 1
+            fi
+            if [[ ! "$UPSTREAM_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::Invalid desktop release tag: ${UPSTREAM_TAG}."
+              exit 1
+            fi
+            if [[ "$(git rev-parse HEAD)" != "$UPSTREAM_SHA" ]]; then
+              echo '::error::Checked out source does not match the successful desktop release.'
+              exit 1
+            fi
 
-          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
-          main_sha="$(git rev-parse refs/remotes/origin/main)"
-          if [[ "$GITHUB_SHA" != "$main_sha" ]]; then
-            echo '::error::This run is not for the current main commit. Dispatch again from the latest main.'
-            exit 1
+            git fetch --no-tags origin "refs/tags/${UPSTREAM_TAG}:refs/tags/${UPSTREAM_TAG}"
+            git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+            tag_sha="$(git rev-parse --verify "${UPSTREAM_TAG}^{commit}")"
+            if [[ "$tag_sha" != "$UPSTREAM_SHA" ]]; then
+              echo '::error::Desktop release tag no longer points to the completed release source.'
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "$tag_sha" refs/remotes/origin/main; then
+              echo '::error::Desktop release source is not merged into main.'
+              exit 1
+            fi
+            expected_tag="$UPSTREAM_TAG"
+          else
+            if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+              echo '::error::Dispatch this workflow from main.'
+              exit 1
+            fi
+
+            git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+            main_sha="$(git rev-parse refs/remotes/origin/main)"
+            if [[ "$GITHUB_SHA" != "$main_sha" ]]; then
+              echo '::error::This run is not for the current main commit. Dispatch again from the latest main.'
+              exit 1
+            fi
+            expected_tag=""
           fi
 
           version="$(node -p "require('./package.json').version")"
-          cli_tag="cli-v${version}"
-          if git show-ref --verify --quiet "refs/tags/$cli_tag"; then
-            tagged_sha="$(git rev-parse "refs/tags/$cli_tag^{commit}")"
-            if [[ "$tagged_sha" != "$GITHUB_SHA" ]]; then
-              echo "::error::${cli_tag} points to another source commit. Bump the CLI version before publishing."
-              exit 1
+          cli_tag="v${version}"
+          if [[ -n "$expected_tag" && "$expected_tag" != "$cli_tag" ]]; then
+            echo "::error::Desktop tag ${expected_tag} does not match package version ${version}."
+            exit 1
+          fi
+
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            manual_cli_tag="cli-v${version}"
+            if git show-ref --verify --quiet "refs/tags/$manual_cli_tag"; then
+              tagged_sha="$(git rev-parse "refs/tags/$manual_cli_tag^{commit}")"
+              if [[ "$tagged_sha" != "$GITHUB_SHA" ]]; then
+                echo "::error::${manual_cli_tag} points to another source commit. Bump the CLI version before publishing."
+                exit 1
+              fi
             fi
           fi
+
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
@@ -86,7 +143,7 @@ jobs:
           if-no-files-found: error
 
   publish-cli:
-    if: inputs.auth_method == 'trusted'
+    if: github.event_name == 'workflow_run' || inputs.auth_method == 'trusted'
     needs: prepare-cli
     runs-on: ubuntu-latest
     permissions:
@@ -122,7 +179,25 @@ jobs:
           name: drawsy-companion-cli-${{ github.run_id }}
           path: release/cli
 
+      - name: Verify the CLI package checksum
+        run: cd release/cli && sha256sum --check CLI-SHA256SUMS
+
+      - name: Skip an npm version that is already published
+        id: npm-version
+        env:
+          PACKAGE_VERSION: ${{ needs.prepare-cli.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if npm view "@drawsy/companion@${PACKAGE_VERSION}" version >/dev/null 2>&1; then
+            echo 'already_published=true' >> "$GITHUB_OUTPUT"
+            echo "@drawsy/companion@${PACKAGE_VERSION} is already published; skipping."
+          else
+            echo 'already_published=false' >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish the CLI tarball with OIDC and provenance
+        if: steps.npm-version.outputs.already_published != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -135,7 +210,7 @@ jobs:
           npm publish "${tarballs[0]}" --access public --provenance
 
   bootstrap-cli:
-    if: inputs.auth_method == 'bootstrap'
+    if: github.event_name == 'workflow_dispatch' && inputs.auth_method == 'bootstrap'
     needs: prepare-cli
     runs-on: ubuntu-latest
     permissions:
