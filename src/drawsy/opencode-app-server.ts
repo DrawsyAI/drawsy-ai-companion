@@ -392,7 +392,8 @@ const runtimeEnvironment = (runtimePath: string, previewPort: number | null) => 
     XDG_CONFIG_HOME: path.join(runtimePath, "config"),
     XDG_CACHE_HOME: path.join(runtimePath, "cache"),
     XDG_STATE_HOME: path.join(runtimePath, "state"),
-    TMPDIR: path.join(runtimePath, "tmp")
+    TMPDIR: path.join(runtimePath, "tmp"),
+    OPENCODE_PURE: "1"
   };
   if (previewPort) {
     environment.PORT = String(previewPort);
@@ -465,7 +466,6 @@ const createLinuxSandboxArguments = (input: {
     input.runtimePath,
     input.executable,
     "serve",
-    "--pure",
     "--hostname",
     "127.0.0.1",
     "--port",
@@ -617,7 +617,6 @@ export class OpenCodeAppServer {
           }),
           openCodeBinary,
           "serve",
-          "--pure",
           "--hostname",
           "127.0.0.1",
           "--port",
