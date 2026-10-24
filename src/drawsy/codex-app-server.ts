@@ -945,6 +945,7 @@ export class CodexAppServer {
   private nextId = 1;
   private threadId: string | null = null;
   private turnActive = false;
+  private hasSubmittedTurn = false;
   private activeTurnId: string | null = null;
   private activeDrawMode = false;
   private nativeBrowserFailureInterruptSent = false;
@@ -1639,6 +1640,9 @@ export class CodexAppServer {
     this.activeDrawMode = pointerDrawMode;
     this.nativeBrowserFailureInterruptSent = false;
     try {
+      // Once a user turn reaches Codex, never replace a missing rollout with an
+      // empty thread while changing settings.
+      this.hasSubmittedTurn = true;
       const result = (await this.request("turn/start", {
         threadId: this.threadId,
         cwd: this.folderPath,
@@ -2068,12 +2072,28 @@ export class CodexAppServer {
     const previousMetadata = { ...this.agentMetadata };
     const previousControls = this.lastControls;
     if (internetChanged) {
-      await this.startAgentThread({
+      const threadOptions = {
         internetEnabled: nextInternet,
         model: selectedModel?.model || this.agentMetadata.model,
         effort: settings.effort || this.agentMetadata.reasoningEffort,
-        nativeThreadId: previousThreadId,
-      });
+      };
+      try {
+        await this.startAgentThread({
+          ...threadOptions,
+          nativeThreadId: previousThreadId,
+        });
+      } catch (error) {
+        if (
+          !isCodexThreadMissingError(error) ||
+          this.session.nativeThreadId ||
+          this.hasSubmittedTurn
+        ) {
+          throw error;
+        }
+        // Codex does not persist a new thread until its first user turn.
+        // Reconfigure this empty thread without trying to resume its rollout.
+        await this.startAgentThread(threadOptions);
+      }
     }
     try {
       await this.request("thread/settings/update", {
