@@ -576,7 +576,8 @@ export const createDrawsyBridge = (
     }
   };
 
-  const closeSession = (session: Session) => {
+  const closeSession = (session: Session, event?: BridgeEvent) => {
+    if (event) emit(session, event);
     sessions.delete(session.id);
     if (
       session.conversationId &&
@@ -2562,7 +2563,9 @@ export const createDrawsyBridge = (
       if (selection.expiresAt <= now) selections.delete(id);
     }
     for (const session of sessions.values()) {
-      if (now - session.touchedAt > 30 * 60 * 1000) closeSession(session);
+      if (now - session.touchedAt > 30 * 60 * 1000) {
+        closeSession(session, { type: "session.closed", data: { reason: "idle" } });
+      }
     }
   }, 60_000);
   cleanup.unref();

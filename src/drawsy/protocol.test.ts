@@ -540,7 +540,7 @@ test("live previews stay on loopback and use bounded geometry", () => {
   );
 });
 
-test("bridge keeps Codex controls inside the selected-folder boundary", async () => {
+test("bridge keeps Codex controls inside the selected-folder boundary", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "drawsy bridge test "));
   const selectedFolder = path.join(root, "workspace");
   const requestLog = path.join(root, "requests.ndjson");
@@ -588,6 +588,7 @@ test("bridge keeps Codex controls inside the selected-folder boundary", async ()
     `#!/usr/bin/env node
 import readline from "node:readline";
 import { appendFile } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
 const log = process.env.DRAWSY_TEST_REQUEST_LOG;
 if (process.argv.includes("--version")) {
   console.log("codex-cli 0.162.1");
@@ -596,6 +597,7 @@ if (process.argv.includes("--version")) {
 const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
 let materialized = false;
 let wasResumed = false;
+let startedHere = false;
 process.on("SIGTERM", () => process.exit(0));
 readline.createInterface({ input: process.stdin }).on("line", async (line) => {
   const message = JSON.parse(line);
@@ -603,6 +605,18 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
   if (message.method === "initialize") send({ id: message.id, result: { ok: true } });
   if (message.method === "config/read") send({ id: message.id, result: { config: { plugins: { "browser@openai-bundled": { enabled: true }, "computer-use@openai-bundled": { enabled: true } }, mcp_servers: { inherited: { command: "bad" }, node_repl: { command: "node-repl", args: [], env: { BROWSER_USE_AVAILABLE_BACKENDS: "chrome,iab" } } } } } });
   if (message.method === "thread/start" || message.method === "thread/resume") {
+    if (message.method === "thread/resume") {
+      const errorFile = log + ".resume-error";
+      if (existsSync(errorFile)) {
+        send({ id: message.id, error: JSON.parse(readFileSync(errorFile, "utf8")) });
+        return;
+      }
+      if (startedHere && !materialized) {
+        send({ id: message.id, error: { code: -32600, message: "no rollout found for thread id thread-1" } });
+        return;
+      }
+    }
+    if (message.method === "thread/start") startedHere = true;
     wasResumed = message.method === "thread/resume";
     send({ id: message.id, result: { thread: { id: "thread-1" }, model: "gpt-test", modelProvider: "openai", reasoningEffort: "medium", serviceTier: null, activePermissionProfile: { id: ":workspace" }, runtimeWorkspaceRoots: message.params.runtimeWorkspaceRoots, approvalPolicy: "never", sandbox: { networkAccess: false } } });
     send({ method: "mcpServer/startupStatus/updated", params: { threadId: "thread-1", name: "drawsy", status: "ready" } });
@@ -728,6 +742,16 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
   process.env.DRAWSY_CODEX_BIN = fakeCodex;
   process.env.DRAWSY_TEST_REQUEST_LOG = requestLog;
   process.env.DRAWSY_LOCAL_STATE_DIR = path.join(root, "local-state");
+  let runIdleCleanup: (() => void) | undefined;
+  const originalSetInterval = globalThis.setInterval;
+  t.mock.method(
+    globalThis,
+    "setInterval",
+    (callback: () => void, delay?: number) => {
+      if (delay === 60_000) runIdleCleanup = callback;
+      return originalSetInterval(callback, delay);
+    }
+  );
   const bridge = createDrawsyBridge({ port, allowedOrigins: [origin] });
 
   try {
@@ -1110,6 +1134,33 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       "draw_target_missing"
     );
 
+    const countThreadStarts = async () =>
+      (await readFile(requestLog, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+        .filter((message) => message.method === "thread/start").length;
+    const startsBeforeSettings = await countThreadStarts();
+    const resumeErrorFile = requestLog + ".resume-error";
+    await writeFile(
+      resumeErrorFile,
+      JSON.stringify({ code: -32603, message: "Resume backend unavailable." })
+    );
+    const failedSettings = await fetch(
+      `${bridge.address}/v1/sessions/${session.id}/settings`,
+      {
+        method: "POST",
+        headers: { ...headers, authorization: `Bearer ${session.token}` },
+        body: JSON.stringify({ internetEnabled: false })
+      }
+    );
+    assert.equal(failedSettings.status, 500);
+    assert.equal(
+      (await failedSettings.json()).error.message,
+      "Resume backend unavailable."
+    );
+    await rm(resumeErrorFile);
+
     const settingsResponse = await fetch(
       `${bridge.address}/v1/sessions/${session.id}/settings`,
       {
@@ -1123,6 +1174,11 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       }
     );
     assert.equal(settingsResponse.status, 200);
+    assert.equal(
+      await countThreadStarts(),
+      startsBeforeSettings + 1,
+      "only a new thread without a rollout may be replaced while applying Internet settings"
+    );
 
     const contextId = "11111111-1111-4111-8111-111111111111";
     const contextBytes = await readFile(generatedImage);
@@ -1713,8 +1769,11 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       canonicalFolder
     );
     const threads = log.filter((message) => message.method === "thread/start");
-    const resumes = log.filter((message) => message.method === "thread/resume");
-    assert.equal(threads.length, 3);
+    const resumes = log.filter(
+      (message) =>
+        message.method === "thread/resume" && message.params.model === "gpt-next"
+    );
+    assert.equal(threads.length, startsBeforeSettings + 1);
     assert.equal(threads[0].params.config.features.network_proxy, false);
     assert.equal(resumes[0].params.threadId, "thread-1");
     assert.equal(resumes[0].params.excludeTurns, true);
@@ -1868,6 +1927,32 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     assert.equal(settings.params.model, "gpt-next");
     assert.equal(settings.params.effort, "high");
     assert.deepEqual(settings.params.sandboxPolicy, turn.params.sandboxPolicy);
+    await writeFile(
+      resumeErrorFile,
+      JSON.stringify({
+        code: -32600,
+        message: "no rollout found for thread id thread-1"
+      })
+    );
+    const missingHistorySettings = await fetch(
+      `${bridge.address}/v1/sessions/${session.id}/settings`,
+      {
+        method: "POST",
+        headers: { ...headers, authorization: `Bearer ${session.token}` },
+        body: JSON.stringify({ internetEnabled: true })
+      }
+    );
+    assert.equal(missingHistorySettings.status, 500);
+    assert.match(
+      (await missingHistorySettings.json()).error.message,
+      /no rollout found/
+    );
+    await rm(resumeErrorFile);
+    assert.equal(
+      await countThreadStarts(),
+      startsBeforeSettings + 1,
+      "a thread that has received a user turn must never be replaced with empty history"
+    );
     const timeResponse = log.find((message) => message.id === "server-time");
     assert.equal(typeof timeResponse.result.currentTimeAt, "number");
     const steerRequest = log.find((message) => message.method === "turn/steer");
@@ -2226,6 +2311,44 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       }
     );
     assert.equal(closeResponse.status, 204);
+
+    const idleSessionResponse = await fetch(`${bridge.address}/v1/sessions`, {
+      method: "POST",
+      headers,
+      body: concurrentInput
+    });
+    assert.equal(idleSessionResponse.status, 201);
+    const idleSession = await idleSessionResponse.json() as {
+      id: string;
+      token: string;
+    };
+    const idleEvents = await fetch(
+      `${bridge.address}/v1/sessions/${idleSession.id}/events`,
+      { headers: { origin, authorization: `Bearer ${idleSession.token}` } }
+    );
+    assert.equal(idleEvents.status, 200);
+    const idleReader = idleEvents.body!.getReader();
+    const idleReady = await idleReader.read();
+    assert.match(new TextDecoder().decode(idleReady.value), /session.ready/);
+    const afterIdle = Date.now() + 31 * 60 * 1000;
+    t.mock.method(Date, "now", () => afterIdle);
+    assert.ok(runIdleCleanup);
+    runIdleCleanup();
+    let idleOutput = "";
+    while (true) {
+      const chunk = await idleReader.read();
+      if (chunk.done) break;
+      idleOutput += new TextDecoder().decode(chunk.value);
+    }
+    const idleNotifications = idleOutput
+      .split("\n")
+      .filter((line) => line.trim())
+      .map((line) => JSON.parse(line));
+    assert.deepEqual(
+      idleNotifications,
+      [{ type: "session.closed", data: { reason: "idle" } }],
+      "expired sessions must announce their closure before ending the event stream"
+    );
   } finally {
     await bridge.close();
     for (const [key, value] of Object.entries(previousEnv)) {

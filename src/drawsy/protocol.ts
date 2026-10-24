@@ -296,6 +296,7 @@ export type BridgeEvent =
       type: "session.ready";
       data: { folderName: string | null; agent: AgentMetadata };
     }
+  | { type: "session.closed"; data: { reason: "idle" } }
   | { type: "assistant.delta"; data: { delta: string; itemId: string } }
   | {
       type: "assistant.final";
