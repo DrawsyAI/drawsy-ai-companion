@@ -949,6 +949,7 @@ export class CodexAppServer {
   private activeTurnId: string | null = null;
   private activeDrawMode = false;
   private nativeBrowserFailureInterruptSent = false;
+  private settingsUpdateInFlight: Promise<unknown> | null = null;
   private agentMetadata: AgentMetadata | null = null;
   private accessMode: AgentAccessMode = "workspace";
   private internetEnabled = true;
@@ -1542,6 +1543,7 @@ export class CodexAppServer {
     drawsyTabUrl?: string | null,
     generationMode: "fast" | "draw" = "draw"
   ) {
+    await this.waitForSettingsUpdate();
     if (!this.threadId || this.turnActive) {
       throw new Error(
         this.turnActive
@@ -2039,89 +2041,106 @@ export class CodexAppServer {
   }
 
   async updateSettings(settings: AgentSettingsPatch) {
-    if (!this.threadId || !this.agentMetadata) {
-      throw new Error("Codex is not ready.");
-    }
-    if (this.turnActive) {
-      throw new Error("Wait for the current Codex turn to finish.");
-    }
-    const controls = await this.getControls();
-    const nextAccessMode = settings.accessMode ?? this.accessMode;
-    const nextInternet = settings.internetEnabled ?? this.internetEnabled;
-    const selectedModel = settings.model
-      ? controls.models.find((model) => model.model === settings.model)
-      : undefined;
-    if (settings.model && !selectedModel) {
-      throw new Error("That model is not available in this Codex session.");
-    }
-    const modelForEffort =
-      selectedModel ||
-      controls.models.find(
-        (model) => model.model === this.agentMetadata?.model
-      );
-    if (
-      settings.effort &&
-      (!modelForEffort ||
-        !modelForEffort.efforts.some((effort) => effort.id === settings.effort))
-    ) {
-      throw new Error("That reasoning level is not available for this model.");
-    }
+    const waitFor = this.settingsUpdateInFlight;
+    const update = (async () => {
+      if (waitFor) await waitFor.catch(() => undefined);
+      if (!this.threadId || !this.agentMetadata) {
+        throw new Error("Codex is not ready.");
+      }
+      if (this.turnActive) {
+        throw new Error("Wait for the current Codex turn to finish.");
+      }
+      const controls = await this.getControls();
+      const nextAccessMode = settings.accessMode ?? this.accessMode;
+      const nextInternet = settings.internetEnabled ?? this.internetEnabled;
+      const selectedModel = settings.model
+        ? controls.models.find((model) => model.model === settings.model)
+        : undefined;
+      if (settings.model && !selectedModel) {
+        throw new Error("That model is not available in this Codex session.");
+      }
+      const modelForEffort =
+        selectedModel ||
+        controls.models.find(
+          (model) => model.model === this.agentMetadata?.model
+        );
+      if (
+        settings.effort &&
+        (!modelForEffort ||
+          !modelForEffort.efforts.some((effort) => effort.id === settings.effort))
+      ) {
+        throw new Error("That reasoning level is not available for this model.");
+      }
 
-    const internetChanged = nextInternet !== this.internetEnabled;
-    const previousThreadId = this.threadId;
-    const previousMetadata = { ...this.agentMetadata };
-    const previousControls = this.lastControls;
-    if (internetChanged) {
-      const threadOptions = {
-        internetEnabled: nextInternet,
-        model: selectedModel?.model || this.agentMetadata.model,
-        effort: settings.effort || this.agentMetadata.reasoningEffort,
-      };
+      const internetChanged = nextInternet !== this.internetEnabled;
+      const previousThreadId = this.threadId;
+      const previousMetadata = { ...this.agentMetadata };
+      const previousControls = this.lastControls;
+      if (internetChanged) {
+        const threadOptions = {
+          internetEnabled: nextInternet,
+          model: selectedModel?.model || this.agentMetadata.model,
+          effort: settings.effort || this.agentMetadata.reasoningEffort,
+        };
+        try {
+          await this.startAgentThread({
+            ...threadOptions,
+            nativeThreadId: previousThreadId,
+          });
+        } catch (error) {
+          if (
+            !isCodexThreadMissingError(error) ||
+            this.session.nativeThreadId ||
+            this.hasSubmittedTurn
+          ) {
+            throw error;
+          }
+          // Codex does not persist a new thread until its first user turn.
+          // Reconfigure this empty thread without trying to resume its rollout.
+          await this.startAgentThread(threadOptions);
+        }
+      }
       try {
-        await this.startAgentThread({
-          ...threadOptions,
-          nativeThreadId: previousThreadId,
+        await this.request("thread/settings/update", {
+          threadId: this.threadId,
+          cwd: this.folderPath,
+          approvalPolicy: "never",
+          sandboxPolicy: this.sandboxPolicy(nextAccessMode),
+          ...(selectedModel ? { model: selectedModel.model } : {}),
+          ...(settings.effort ? { effort: settings.effort } : {}),
         });
       } catch (error) {
-        if (
-          !isCodexThreadMissingError(error) ||
-          this.session.nativeThreadId ||
-          this.hasSubmittedTurn
-        ) {
-          throw error;
+        if (internetChanged) {
+          this.threadId = previousThreadId;
+          this.agentMetadata = previousMetadata;
+          this.lastControls = previousControls;
         }
-        // Codex does not persist a new thread until its first user turn.
-        // Reconfigure this empty thread without trying to resume its rollout.
-        await this.startAgentThread(threadOptions);
+        throw error;
       }
-    }
+      this.accessMode = nextAccessMode;
+      this.internetEnabled = nextInternet;
+      if (selectedModel) this.agentMetadata.model = selectedModel.model;
+      if (settings.effort) this.agentMetadata.reasoningEffort = settings.effort;
+      if (internetChanged && previousThreadId !== this.threadId) {
+        await this.request("thread/unsubscribe", {
+          threadId: previousThreadId,
+        }).catch(() => undefined);
+      }
+      return { agent: this.metadata, controls: await this.getControls() };
+    })();
+    this.settingsUpdateInFlight = update;
     try {
-      await this.request("thread/settings/update", {
-        threadId: this.threadId,
-        cwd: this.folderPath,
-        approvalPolicy: "never",
-        sandboxPolicy: this.sandboxPolicy(nextAccessMode),
-        ...(selectedModel ? { model: selectedModel.model } : {}),
-        ...(settings.effort ? { effort: settings.effort } : {}),
-      });
-    } catch (error) {
-      if (internetChanged) {
-        this.threadId = previousThreadId;
-        this.agentMetadata = previousMetadata;
-        this.lastControls = previousControls;
+      return await update;
+    } finally {
+      if (this.settingsUpdateInFlight === update) {
+        this.settingsUpdateInFlight = null;
       }
-      throw error;
     }
-    this.accessMode = nextAccessMode;
-    this.internetEnabled = nextInternet;
-    if (selectedModel) this.agentMetadata.model = selectedModel.model;
-    if (settings.effort) this.agentMetadata.reasoningEffort = settings.effort;
-    if (internetChanged && previousThreadId !== this.threadId) {
-      await this.request("thread/unsubscribe", {
-        threadId: previousThreadId,
-      }).catch(() => undefined);
-    }
-    return { agent: this.metadata, controls: await this.getControls() };
+  }
+
+  private async waitForSettingsUpdate() {
+    if (!this.settingsUpdateInFlight) return;
+    await this.settingsUpdateInFlight.catch(() => undefined);
   }
 
   private sandboxPolicy(accessMode = this.accessMode): JsonObject {
