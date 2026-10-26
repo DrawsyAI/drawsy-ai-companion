@@ -89,6 +89,107 @@ export type CanvasDiagramCodeRequest = {
   replaceOperationId?: string;
 };
 
+export type CanvasLibraryRequest =
+  | {
+      action: "search";
+      query?: string;
+      source?: "public";
+      cursor?: string;
+      limit?: number;
+    }
+  | {
+      action: "read";
+      source: "public";
+      packId: string;
+      itemId?: string;
+      cursor?: string;
+      limit?: number;
+    }
+  | {
+      action: "insert";
+      source: "public";
+      packId: string;
+      itemId: string;
+      x: number;
+      y: number;
+      operationId: string;
+    };
+
+export const parseCanvasLibraryRequest = (
+  value: unknown
+): CanvasLibraryRequest => {
+  if (!isRecord(value)) throw new Error("Library request must be an object.");
+  const boundedString = (key: string, max: number, required = false) => {
+    const entry = value[key];
+    if (entry === undefined && !required) return undefined;
+    if (typeof entry !== "string" || !entry.trim() || entry.length > max)
+      throw new Error(`Library ${key} is invalid.`);
+    return entry.trim();
+  };
+  const pagination = () => {
+    const cursor = boundedString("cursor", 4_096);
+    const limit = value.limit;
+    if (
+      limit !== undefined &&
+      (typeof limit !== "number" ||
+        !Number.isInteger(limit) ||
+        limit < 1 ||
+        limit > 50)
+    )
+      throw new Error("Library limit must be an integer from 1 to 50.");
+    return {
+      ...(cursor ? { cursor } : {}),
+      ...(limit !== undefined ? { limit } : {})
+    };
+  };
+  const source = value.source;
+  if (source !== undefined && source !== "public")
+    throw new Error("Only the public library catalog is available.");
+  if (value.action === "search") {
+    const query = boundedString("query", 256);
+    return {
+      action: "search",
+      ...(query ? { query } : {}),
+      source: "public",
+      ...pagination()
+    };
+  }
+  if (value.action === "read" || value.action === "insert") {
+    const packId = boundedString("packId", 256, true)!;
+    const itemId = boundedString("itemId", 256, value.action === "insert");
+    if (value.action === "read") {
+      return {
+        action: "read",
+        source: "public",
+        packId,
+        ...(itemId ? { itemId } : {}),
+        ...pagination()
+      };
+    }
+    const { x, y } = value;
+    if (
+      typeof x !== "number" ||
+      !Number.isFinite(x) ||
+      Math.abs(x) > 1_000_000 ||
+      typeof y !== "number" ||
+      !Number.isFinite(y) ||
+      Math.abs(y) > 1_000_000
+    )
+      throw new Error("Library insertion coordinates are invalid.");
+    const validOperationId = boundedString("operationId", 128, true)!;
+    return {
+      action: "insert",
+      source: "public",
+      packId,
+      itemId: itemId!,
+      x,
+      y,
+      operationId: validOperationId
+    };
+  }
+  throw new Error("Library action is invalid.");
+};
+
 export type CanvasDiagramCodeResult = {
   outputKind: "editable-vector" | "image-fallback";
   diagramType: string;
@@ -339,7 +440,8 @@ export type BridgeEvent =
           | "inspect"
           | "capture"
           | "replaceImage"
-          | "preview";
+          | "preview"
+          | "library";
         canvasId: string;
         operations?: CanvasOperations;
         connectorRequest?: CanvasConnectorRequest;
@@ -348,6 +450,7 @@ export type BridgeEvent =
         contextRequest?: CanvasContextRequest;
         imageReplacement?: CanvasImageReplacement;
         previewRequest?: LivePreviewRequest;
+        libraryRequest?: CanvasLibraryRequest;
       };
     }
   | {
@@ -418,6 +521,9 @@ const renderedElementType = (element: JsonObject) => {
     return rounded ? "rounded diamond" : "diamond";
   }
   if (type === "rectangle") {
+    if (typeof element.shapeKind === "string" && element.shapeKind.trim()) {
+      return element.shapeKind;
+    }
     return rounded ? "rounded rectangle" : "rectangle";
   }
   return type;

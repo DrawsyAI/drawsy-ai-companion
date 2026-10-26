@@ -91,6 +91,12 @@ const describeToolItem = (item: JsonObject): ActiveTool | null => {
     const drawsyMessages =
       item.tool === "read_current_canvas"
         ? { started: "Reading current canvas", completed: "Canvas read" }
+        : item.tool === "search_library"
+        ? { started: "Searching library", completed: "Library searched" }
+        : item.tool === "read_library_item"
+        ? { started: "Reading library item", completed: "Library item read" }
+        : item.tool === "insert_library_item"
+        ? { started: "Inserting library item", completed: "Library item inserted" }
         : item.tool === "get_canvas_capabilities"
         ? { started: "Checking canvas tools", completed: "Canvas tools ready" }
         : item.tool === "create_or_update_connector"
@@ -1390,6 +1396,9 @@ export class CodexAppServer {
           default_tools_approval_mode: "auto",
           tools: {
             apply_canvas_changes: { approval_mode: "approve" },
+            search_library: { approval_mode: "approve" },
+            read_library_item: { approval_mode: "approve" },
+            insert_library_item: { approval_mode: "approve" },
             render_diagram_code: { approval_mode: "approve" },
             create_or_update_connector: { approval_mode: "approve" },
             set_container_label: { approval_mode: "approve" },

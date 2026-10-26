@@ -83,6 +83,25 @@ test("canvas reads expose rendered semantics without changing raw elements", () 
   });
 });
 
+test("canvas reads expose native rectangle shape kinds and preserve legacy labels", () => {
+  const elements = [
+    { id: "heart-1", type: "rectangle", shapeKind: "heart" },
+    { id: "triangle-1", type: "rectangle", shapeKind: "triangle" },
+    { id: "rhombus-1", type: "rectangle", shapeKind: "slantedRhombus" },
+    { id: "rectangle-1", type: "rectangle" },
+  ];
+  const result = addCanvasRenderSemantics({ elements }) as {
+    renderSemantics: { elements: Array<{ id: string; renderedType: string }> };
+  };
+
+  assert.deepEqual(result.renderSemantics.elements, [
+    { id: "heart-1", renderedType: "heart" },
+    { id: "triangle-1", renderedType: "triangle" },
+    { id: "rhombus-1", renderedType: "slantedRhombus" },
+    { id: "rectangle-1", renderedType: "rectangle" },
+  ]);
+});
+
 test("canvas read preserves app-provided rendered styles and relationships", () => {
   const result = addCanvasRenderSemantics({
     canvasId: "canvas-2",

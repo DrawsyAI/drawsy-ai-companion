@@ -23,6 +23,7 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
   let appliedBody = "";
   const connectorRequests: Array<{ url: string; body: unknown }> = [];
   const resourceRequests: unknown[] = [];
+  const libraryRequests: unknown[] = [];
   const server = createServer(async (request, response) => {
     assert.equal(request.headers.authorization, `Bearer ${secret}`);
     if (request.url?.endsWith("/connectors/list")) {
@@ -108,6 +109,14 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       resourceRequests.push(JSON.parse(body));
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({ boards: [{ id: "board-0001" }] }));
+      return;
+    }
+    if (request.url?.endsWith("/canvas/library")) {
+      let body = "";
+      for await (const chunk of request) body += chunk.toString();
+      libraryRequests.push(JSON.parse(body));
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ action: JSON.parse(body).action, ok: true }));
       return;
     }
     if (request.url?.endsWith("/read")) {
@@ -203,6 +212,18 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
 
   try {
     await client.connect(transport);
+    for (const [name, args, action] of [
+      ["search_library", { query: "network", limit: 5 }, "search"],
+      ["read_library_item", { packId: "pack", itemId: "item" }, "read"],
+      ["insert_library_item", { packId: "pack", itemId: "item", x: 20, y: -30, operationId: "insert-1" }, "insert"],
+    ] as const) {
+      const result = await client.callTool({ name, arguments: args });
+      assert.notEqual(result.isError, true);
+      assert.deepEqual(libraryRequests.at(-1), { ...args, action, source: "public" });
+    }
+    const invalid = await client.callTool({ name: "insert_library_item", arguments: { packId: "pack", itemId: "item", x: 0, y: 0 } });
+    assert.equal(invalid.isError, true);
+    assert.equal(libraryRequests.length, 3, "invalid requests must not reach the bridge");
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
       "add_image_from_file",
@@ -214,6 +235,7 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       "create_kanban_checklist_item",
       "create_or_update_connector",
       "get_canvas_capabilities",
+      "insert_library_item",
       "inspect_current_canvas_layout",
       "link_current_canvas_to_kanban_card",
       "list_aws_cloudformation_stacks",
@@ -242,11 +264,13 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       "read_current_canvas",
       "read_jira_issue",
       "read_kanban_board",
+      "read_library_item",
       "render_diagram_code",
       "replace_canvas_image_from_file",
       "search_aws_resources",
       "search_connected_source",
       "search_jira_issues",
+      "search_library",
       "set_container_label",
       "update_kanban_card",
       "update_kanban_checklist_item"
@@ -583,5 +607,40 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       server.close((error) => (error ? reject(error) : resolve()))
     );
     await rm(testRoot, { recursive: true, force: true });
+  }
+});
+
+
+test("library tools are scoped to visual surfaces", async () => {
+  for (const surface of ["canvas", "presentation", "kanban", "jira", "neutral"]) {
+    const client = new Client({ name: "library-scope-test", version: "0.1.0" });
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(path.dirname(fileURLToPath(import.meta.url)), "mcp.js")],
+      env: {
+        PATH: process.env.PATH || "",
+        DRAWSY_BRIDGE_URL: "http://127.0.0.1:9",
+        DRAWSY_SESSION_ID: "session-test",
+        DRAWSY_SESSION_SECRET: "test-secret",
+        DRAWSY_WORKSPACE_ROOT: process.cwd(),
+        DRAWSY_SURFACE_KIND: surface
+      },
+      stderr: "pipe"
+    });
+    try {
+      await client.connect(transport);
+      const { tools } = await client.listTools();
+      for (const name of ["search_library", "read_library_item", "insert_library_item"]) {
+        const tool = tools.find((entry) => entry.name === name);
+        assert.equal(Boolean(tool), surface === "canvas" || surface === "presentation", `${surface}: ${name}`);
+        if (tool) {
+          assert.equal(tool.annotations?.destructiveHint, false);
+          assert.equal(tool.annotations?.readOnlyHint, name !== "insert_library_item");
+          assert.equal(tool.inputSchema.additionalProperties, false);
+        }
+      }
+    } finally {
+      await client.close();
+    }
   }
 });

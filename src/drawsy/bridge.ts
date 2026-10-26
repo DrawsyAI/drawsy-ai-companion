@@ -52,6 +52,7 @@ import {
   parseCanvasConnectorRequest,
   parseCanvasDiagramCodeRequest,
   parseCanvasLabelRequest,
+  parseCanvasLibraryRequest,
   parseCanvasImageRequest,
   parseLivePreviewRequest,
   parseCanvasOperations,
@@ -72,6 +73,7 @@ import {
   type CanvasConnectorRequest,
   type CanvasDiagramCodeRequest,
   type CanvasLabelRequest,
+  type CanvasLibraryRequest,
   type CanvasImageReplacement,
   type CanvasOperations,
   type LivePreviewRequest,
@@ -215,7 +217,8 @@ const assertCanvasActionAllowed = (session: Session, action: string) => {
       "context",
       "replace-image",
       "replaceImage",
-      "preview"
+      "preview",
+      "library"
     ].includes(action)
   ) {
     throw new BridgeRequestError(
@@ -1215,7 +1218,8 @@ export const createDrawsyBridge = (
       | "inspect"
       | "capture"
       | "replaceImage"
-      | "preview",
+      | "preview"
+      | "library",
     options: {
       operations?: CanvasOperations;
       connectorRequest?: CanvasConnectorRequest;
@@ -1224,6 +1228,7 @@ export const createDrawsyBridge = (
       contextRequest?: CanvasContextRequest;
       imageReplacement?: CanvasImageReplacement;
       previewRequest?: LivePreviewRequest;
+      libraryRequest?: CanvasLibraryRequest;
     } = {}
   ) => {
     assertCanvasActionAllowed(session, action);
@@ -1406,7 +1411,7 @@ export const createDrawsyBridge = (
       }
 
       const internalCanvas = url.pathname.match(
-        /^\/internal\/sessions\/([^/]+)\/canvas\/(read|capabilities|connector|label|diagram|apply|inspect|image|context|replace-image|preview)$/
+        /^\/internal\/sessions\/([^/]+)\/canvas\/(read|capabilities|connector|label|diagram|apply|inspect|image|context|replace-image|preview|library)$/
       );
       if (request.method === "POST" && internalCanvas) {
         const session = internalSession(
@@ -1426,7 +1431,8 @@ export const createDrawsyBridge = (
           | "image"
           | "context"
           | "replace-image"
-          | "preview";
+          | "preview"
+          | "library";
         const body = await readJson(request);
         assertCanvasActionAllowed(
           session,
@@ -1454,6 +1460,10 @@ export const createDrawsyBridge = (
             : action === "preview"
             ? await requestCanvas(session, "preview", {
                 previewRequest: parsedPreview!
+              })
+            : action === "library"
+            ? await requestCanvas(session, "library", {
+                libraryRequest: parseCanvasLibraryRequest(body)
               })
             : action === "diagram"
             ? await requestCanvas(session, "diagram", {
@@ -1602,7 +1612,8 @@ export const createDrawsyBridge = (
       if (request.method === "GET" && url.pathname === "/v1/engines") {
         json(response, 200, {
           engines: readLocalEngineStatus(),
-          generationModes: ["draw", "fast"]
+          generationModes: ["draw", "fast"],
+          library: true
         });
         return;
       }
