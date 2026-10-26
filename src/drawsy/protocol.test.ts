@@ -608,6 +608,7 @@ test("bridge keeps Codex controls inside the selected-folder boundary", async (t
 import readline from "node:readline";
 import { appendFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
 const log = process.env.DRAWSY_TEST_REQUEST_LOG;
 if (process.argv.includes("--version")) {
   console.log("codex-cli 0.162.1");
@@ -617,6 +618,8 @@ const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
 let materialized = false;
 let wasResumed = false;
 let startedHere = false;
+let threadStartCount = 0;
+let currentThreadId = "thread-1";
 process.on("SIGTERM", () => process.exit(0));
 readline.createInterface({ input: process.stdin }).on("line", async (line) => {
   const message = JSON.parse(line);
@@ -635,10 +638,23 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         return;
       }
     }
-    if (message.method === "thread/start") startedHere = true;
+    if (message.method === "thread/start") {
+      const delayFile = log + ".thread-start-delay-ms";
+      if (existsSync(delayFile)) {
+        const delayMs = Number(readFileSync(delayFile, "utf8"));
+        if (Number.isFinite(delayMs) && delayMs > 0) {
+          await delay(delayMs);
+        }
+      }
+      startedHere = true;
+      threadStartCount += 1;
+      currentThreadId = \`thread-\${threadStartCount}\`;
+    } else if (typeof message.params.threadId === "string") {
+      currentThreadId = message.params.threadId;
+    }
     wasResumed = message.method === "thread/resume";
-    send({ id: message.id, result: { thread: { id: "thread-1" }, model: "gpt-test", modelProvider: "openai", reasoningEffort: "medium", serviceTier: null, activePermissionProfile: { id: ":workspace" }, runtimeWorkspaceRoots: message.params.runtimeWorkspaceRoots, approvalPolicy: "never", sandbox: { networkAccess: false } } });
-    send({ method: "mcpServer/startupStatus/updated", params: { threadId: "thread-1", name: "drawsy", status: "ready" } });
+    send({ id: message.id, result: { thread: { id: currentThreadId }, model: "gpt-test", modelProvider: "openai", reasoningEffort: "medium", serviceTier: null, activePermissionProfile: { id: ":workspace" }, runtimeWorkspaceRoots: message.params.runtimeWorkspaceRoots, approvalPolicy: "never", sandbox: { networkAccess: false } } });
+    send({ method: "mcpServer/startupStatus/updated", params: { threadId: currentThreadId, name: "drawsy", status: "ready" } });
   }
   if (message.method === "thread/turns/list") {
     if (!materialized && !wasResumed) {
@@ -692,36 +708,37 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
   if (message.method === "thread/unsubscribe") send({ id: message.id, result: { status: "unsubscribed" } });
   if (message.method === "turn/start") {
     materialized = true;
+    const threadId = message.params.threadId;
     if (message.params.input.at(-1)?.text === "hold") {
       send({ id: message.id, result: { turn: { id: "turn-hold" } } });
-      send({ method: "turn/started", params: { threadId: "thread-1", turn: { id: "turn-hold", status: "inProgress" } } });
+      send({ method: "turn/started", params: { threadId, turn: { id: "turn-hold", status: "inProgress" } } });
       return;
     }
     send({ id: message.id, result: { turn: { id: "turn-1" } } });
-    send({ method: "turn/started", params: { threadId: "thread-1", turn: { id: "turn-1", status: "inProgress" } } });
-    send({ method: "item/started", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "reasoning", id: "reasoning-1", summary: [], content: [] } } });
-    send({ method: "item/reasoning/summaryTextDelta", params: { threadId: "thread-1", turnId: "turn-1", itemId: "reasoning-1", summaryIndex: 0, delta: "Inspecting" } });
-    send({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "reasoning", id: "reasoning-1", summary: ["Inspecting"], content: [] } } });
-    send({ method: "turn/plan/updated", params: { threadId: "thread-1", turnId: "turn-1", explanation: null, plan: [{ step: "Inspect files", status: "inProgress" }] } });
-    send({ method: "item/started", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "commandExecution", id: "command-1", command: "rg --files", cwd: message.params.cwd, status: "inProgress" } } });
-    send({ method: "item/commandExecution/outputDelta", params: { threadId: "thread-1", turnId: "turn-1", itemId: "command-1", delta: "README.md\\n" } });
-    send({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "commandExecution", id: "command-1", command: "rg --files", cwd: message.params.cwd, status: "completed", exitCode: 0 } } });
-    send({ method: "item/started", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "mcpToolCall", id: "tool-1", server: "drawsy", tool: "read_current_canvas", status: "inProgress" } } });
-    send({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "mcpToolCall", id: "tool-1", server: "drawsy", tool: "read_current_canvas", status: "completed", error: null } } });
-    send({ method: "item/started", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "mcpToolCall", id: "tool-failed", server: "drawsy", tool: "list_github_repositories", status: "inProgress" } } });
-    send({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "mcpToolCall", id: "tool-failed", server: "drawsy", tool: "list_github_repositories", status: "failed", error: null, result: { content: [{ type: "text", text: "GitHub App cannot access that repository." }], structuredContent: null, _meta: null } } } });
-    send({ method: "item/started", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "mcpToolCall", id: "tool-failed-empty", server: "drawsy", tool: "list_aws_regions", status: "inProgress" } } });
-    send({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "mcpToolCall", id: "tool-failed-empty", server: "drawsy", tool: "list_aws_regions", status: "failed", error: null, result: {} } } });
-    send({ method: "item/started", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "imageGeneration", id: "image-1", status: "inProgress", result: "" } } });
-    send({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "imageGeneration", id: "image-1", status: "completed", result: "", savedPath: ${JSON.stringify(
+    send({ method: "turn/started", params: { threadId, turn: { id: "turn-1", status: "inProgress" } } });
+    send({ method: "item/started", params: { threadId, turnId: "turn-1", item: { type: "reasoning", id: "reasoning-1", summary: [], content: [] } } });
+    send({ method: "item/reasoning/summaryTextDelta", params: { threadId, turnId: "turn-1", itemId: "reasoning-1", summaryIndex: 0, delta: "Inspecting" } });
+    send({ method: "item/completed", params: { threadId, turnId: "turn-1", item: { type: "reasoning", id: "reasoning-1", summary: ["Inspecting"], content: [] } } });
+    send({ method: "turn/plan/updated", params: { threadId, turnId: "turn-1", explanation: null, plan: [{ step: "Inspect files", status: "inProgress" }] } });
+    send({ method: "item/started", params: { threadId, turnId: "turn-1", item: { type: "commandExecution", id: "command-1", command: "rg --files", cwd: message.params.cwd, status: "inProgress" } } });
+    send({ method: "item/commandExecution/outputDelta", params: { threadId, turnId: "turn-1", itemId: "command-1", delta: "README.md\\n" } });
+    send({ method: "item/completed", params: { threadId, turnId: "turn-1", item: { type: "commandExecution", id: "command-1", command: "rg --files", cwd: message.params.cwd, status: "completed", exitCode: 0 } } });
+    send({ method: "item/started", params: { threadId, turnId: "turn-1", item: { type: "mcpToolCall", id: "tool-1", server: "drawsy", tool: "read_current_canvas", status: "inProgress" } } });
+    send({ method: "item/completed", params: { threadId, turnId: "turn-1", item: { type: "mcpToolCall", id: "tool-1", server: "drawsy", tool: "read_current_canvas", status: "completed", error: null } } });
+    send({ method: "item/started", params: { threadId, turnId: "turn-1", item: { type: "mcpToolCall", id: "tool-failed", server: "drawsy", tool: "list_github_repositories", status: "inProgress" } } });
+    send({ method: "item/completed", params: { threadId, turnId: "turn-1", item: { type: "mcpToolCall", id: "tool-failed", server: "drawsy", tool: "list_github_repositories", status: "failed", error: null, result: { content: [{ type: "text", text: "GitHub App cannot access that repository." }], structuredContent: null, _meta: null } } } });
+    send({ method: "item/started", params: { threadId, turnId: "turn-1", item: { type: "mcpToolCall", id: "tool-failed-empty", server: "drawsy", tool: "list_aws_regions", status: "inProgress" } } });
+    send({ method: "item/completed", params: { threadId, turnId: "turn-1", item: { type: "mcpToolCall", id: "tool-failed-empty", server: "drawsy", tool: "list_aws_regions", status: "failed", error: null, result: {} } } });
+    send({ method: "item/started", params: { threadId, turnId: "turn-1", item: { type: "imageGeneration", id: "image-1", status: "inProgress", result: "" } } });
+    send({ method: "item/completed", params: { threadId, turnId: "turn-1", item: { type: "imageGeneration", id: "image-1", status: "completed", result: "", savedPath: ${JSON.stringify(
       generatedImage
     )} } } });
-    send({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "Extension", id: "extension-image-1", status: "completed", result: ${JSON.stringify(
+    send({ method: "item/completed", params: { threadId, turnId: "turn-1", item: { type: "Extension", id: "extension-image-1", status: "completed", result: ${JSON.stringify(
       generatedImageBase64
     )} } } });
-    send({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "agentMessage", id: "image-message-1", text: "![A charming storybook house](attachment://extension-image-1.png)" } } });
-    send({ method: "warning", params: { threadId: "thread-1", message: "Test warning" } });
-    send({ method: "item/agentMessage/delta", params: { delta: "Ready", itemId: "message-1", threadId: "thread-1", turnId: "turn-1" } });
+    send({ method: "item/completed", params: { threadId, turnId: "turn-1", item: { type: "agentMessage", id: "image-message-1", text: "![A charming storybook house](attachment://extension-image-1.png)" } } });
+    send({ method: "warning", params: { threadId, message: "Test warning" } });
+    send({ method: "item/agentMessage/delta", params: { delta: "Ready", itemId: "message-1", threadId, turnId: "turn-1" } });
     send({ id: "server-time", method: "currentTime/read", params: {} });
   }
   if (message.method === "turn/steer") {
@@ -1197,6 +1214,60 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       await countThreadStarts(),
       startsBeforeSettings + 1,
       "only a new thread without a rollout may be replaced while applying Internet settings"
+    );
+    const threadStartDelayFile = requestLog + ".thread-start-delay-ms";
+    await writeFile(
+      resumeErrorFile,
+      JSON.stringify({
+        code: -32600,
+        message: "no rollout found for thread id thread-2",
+      })
+    );
+    await writeFile(threadStartDelayFile, "200");
+    const sessionHeaders = {
+      ...headers,
+      authorization: "Bearer " + session.token,
+    };
+    const pendingConcurrentSettings = fetch(
+      `${bridge.address}/v1/sessions/${session.id}/settings`,
+      {
+        method: "POST",
+        headers: sessionHeaders,
+        body: JSON.stringify({ internetEnabled: true }),
+      }
+    );
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    const concurrentFirstTurn = fetch(
+      `${bridge.address}/v1/sessions/${session.id}/turns`,
+      {
+        method: "POST",
+        headers: sessionHeaders,
+        body: JSON.stringify({
+          message: "first turn during internet settings replacement",
+        }),
+      }
+    );
+    const [concurrentSettingsResponse, concurrentTurnResponse] =
+      await Promise.all([pendingConcurrentSettings, concurrentFirstTurn]);
+    assert.equal(concurrentSettingsResponse.status, 200);
+    assert.equal(concurrentTurnResponse.status, 202);
+    await rm(resumeErrorFile);
+    await rm(threadStartDelayFile);
+    const concurrentLog = (await readFile(requestLog, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    const concurrentTurnRequest = concurrentLog.find(
+      (message) =>
+        message.method === "turn/start" &&
+        message.params.input.at(-1)?.text ===
+          "first turn during internet settings replacement"
+    );
+    assert.ok(concurrentTurnRequest);
+    assert.equal(
+      concurrentTurnRequest.params.threadId,
+      "thread-3",
+      "the first turn must wait for thread replacement and use the new thread id"
     );
 
     const contextId = "11111111-1111-4111-8111-111111111111";
@@ -1792,7 +1863,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       (message) =>
         message.method === "thread/resume" && message.params.model === "gpt-next"
     );
-    assert.equal(threads.length, startsBeforeSettings + 1);
+    assert.equal(threads.length, startsBeforeSettings + 2);
     assert.equal(threads[0].params.config.features.network_proxy, false);
     assert.equal(resumes[0].params.threadId, "thread-1");
     assert.equal(resumes[0].params.excludeTurns, true);
@@ -1818,7 +1889,14 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     assert.ok(turnPages.length >= 2);
     assert.equal(turnPages.at(-1).params.itemsView, "notLoaded");
     assert.equal(turnPages.at(-1).params.sortDirection, "asc");
-    const turn = log.find((message) => message.method === "turn/start");
+    const turn = log
+      .filter((message) => message.method === "turn/start")
+      .find((message) =>
+        message.params.input.some(
+          (item: { text?: string }) => item.text === "Inspect the folder."
+        )
+      );
+    assert.ok(turn);
     assert.equal(turn.params.permissions, undefined);
     assert.deepEqual(turn.params.sandboxPolicy, {
       type: "workspaceWrite",
@@ -1827,6 +1905,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       excludeTmpdirEnvVar: true,
       excludeSlashTmp: true,
     });
+    const activeThreadId = turn.params.threadId;
     assert.equal(turn.params.environments, undefined);
     assert.equal(turn.params.input[0].type, "skill");
     assert.equal(turn.params.input[1].type, "mention");
@@ -1957,8 +2036,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       `${bridge.address}/v1/sessions/${session.id}/settings`,
       {
         method: "POST",
-        headers: { ...headers, authorization: `Bearer ${session.token}` },
-        body: JSON.stringify({ internetEnabled: true })
+        headers: { ...headers, authorization: "Bearer " + session.token },
+        body: JSON.stringify({ internetEnabled: false })
       }
     );
     assert.equal(missingHistorySettings.status, 500);
@@ -1969,14 +2048,14 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     await rm(resumeErrorFile);
     assert.equal(
       await countThreadStarts(),
-      startsBeforeSettings + 1,
+      startsBeforeSettings + 2,
       "a thread that has received a user turn must never be replaced with empty history"
     );
     const timeResponse = log.find((message) => message.id === "server-time");
     assert.equal(typeof timeResponse.result.currentTimeAt, "number");
     const steerRequest = log.find((message) => message.method === "turn/steer");
     assert.deepEqual(steerRequest.params, {
-      threadId: "thread-1",
+      threadId: activeThreadId,
       expectedTurnId: "turn-hold",
       input: [
         {
@@ -1990,7 +2069,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       (message) => message.method === "turn/interrupt"
     );
     assert.deepEqual(interruptRequest.params, {
-      threadId: "thread-1",
+      threadId: activeThreadId,
       turnId: "turn-hold",
     });
 
