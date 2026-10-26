@@ -10,6 +10,7 @@ import {
   MAX_DIAGRAM_SOURCE_BYTES,
   parseCanvasDiagramCodeRequest,
   parseCanvasOperations,
+  parseCanvasLibraryRequest,
   type DrawsySurfaceKind
 } from "./protocol.js";
 
@@ -54,7 +55,8 @@ const callBridge = async (
     | "image"
     | "context"
     | "replace-image"
-    | "preview",
+    | "preview"
+    | "library",
   body: unknown = {}
 ) => {
   const response = await fetch(
@@ -711,6 +713,89 @@ if (surfaceKind === "canvas" || surfaceKind === "presentation") {
         };
       }
     }
+  );
+}
+
+if (surfaceKind === "canvas" || surfaceKind === "presentation") {
+  const libraryCall = async (input: unknown) => {
+    try {
+      const parsed = parseCanvasLibraryRequest(input);
+      const result = JSON.parse(await callBridge("library", parsed)) as unknown;
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(result) }],
+      };
+    } catch (error) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text" as const,
+            text:
+              error instanceof Error
+                ? error.message
+                : "Library request failed.",
+          },
+        ],
+      };
+    }
+  };
+  const optionalPage = {
+    cursor: z.string().trim().min(1).max(4_096).optional(),
+    limit: z.number().int().min(1).max(50).optional(),
+  };
+  server.registerTool(
+    "search_library",
+    {
+      description: "Search the public catalog for packs and items.",
+      inputSchema: z
+        .object({
+          query: z.string().trim().min(1).max(256).optional(),
+          ...optionalPage,
+        })
+        .strict(),
+      annotations: { readOnlyHint: true, destructiveHint: false },
+    },
+    (input) => libraryCall({ ...input, action: "search" })
+  );
+  server.registerTool(
+    "read_library_item",
+    {
+      description: "Read public library items or list a pack’s items.",
+      inputSchema: z
+        .object({
+          packId: z.string().trim().min(1).max(256),
+          itemId: z.string().trim().min(1).max(256).optional(),
+          ...optionalPage,
+        })
+        .strict(),
+      annotations: { readOnlyHint: true, destructiveHint: false },
+    },
+    (input) => libraryCall({ ...input, action: "read" })
+  );
+  server.registerTool(
+    "insert_library_item",
+    {
+      description:
+        "Insert a library item at canvas coordinates x and y, measured from its top-left corner. Returns element IDs usable with the canvas connector tool.",
+      inputSchema: z
+        .object({
+          packId: z.string().trim().min(1).max(256),
+          itemId: z.string().trim().min(1).max(256),
+          x: z.number().finite().min(-1_000_000).max(1_000_000),
+          y: z.number().finite().min(-1_000_000).max(1_000_000),
+          operationId: z
+            .string()
+            .trim()
+            .min(1)
+            .max(128)
+            .describe(
+              "Insertion identifier; reuse for retries of the same insertion."
+            ),
+        })
+        .strict(),
+      annotations: { readOnlyHint: false, destructiveHint: false },
+    },
+    (input) => libraryCall({ ...input, action: "insert" })
   );
 }
 

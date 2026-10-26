@@ -203,3 +203,7 @@ MIT. See [`LICENSE`](LICENSE).
 ## Environment operation
 
 See [ENVIRONMENT.md](ENVIRONMENT.md) for explicit modes, local configuration, production boundaries, and verification rules.
+
+### Public canvas library
+
+Canvas and presentation sessions expose `search_library`, `read_library_item`, and `insert_library_item` through the authenticated canvas bridge. Models can discover public packs, inspect items, and insert reusable native elements that can be connected to diagrams. `@Library` is available when the connected bridge advertises library support. Personal libraries are not exposed.
