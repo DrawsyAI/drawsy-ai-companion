@@ -228,9 +228,11 @@ test("OpenCode exposes global Codex and OpenCode skills to its native skill load
       workspace,
       "linux"
     );
-    const mappedGlobalSource = linuxSources.find(({ hostPath }) =>
-      hostPath.includes(path.join(".codex", "skills"))
-    );
+    const mappedGlobalSource = linuxSources.find(({ hostPath }) => {
+      const segments = hostPath.split(/[\\/]/);
+      const codexIndex = segments.indexOf(".codex");
+      return codexIndex >= 0 && segments[codexIndex + 1] === "skills";
+    });
     assert.ok(mappedGlobalSource);
     assert.notEqual(mappedGlobalSource.sessionPath, mappedGlobalSource.hostPath);
 
