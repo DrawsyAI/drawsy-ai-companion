@@ -806,12 +806,27 @@ const bundledSkillRoot = path.resolve(
   "../../skills"
 );
 
-export const loadBundledFastDiagramSkill = async () => {
+export const loadBundledSkill = async (name: string, expectedPath?: string) => {
+  if (!BUNDLED_SKILL_NAMES.has(name) || NATIVE_CHROME_BUNDLED_SKILL_NAMES.has(name)) {
+    return null;
+  }
+  const skillPath = path.join(bundledSkillRoot, name, "SKILL.md");
+  if (expectedPath && path.resolve(expectedPath) !== path.resolve(skillPath)) {
+    return null;
+  }
   const content = await readFile(
-    path.join(bundledSkillRoot, "drawsy-fast-diagrams", "SKILL.md"),
+    skillPath,
     "utf8"
   );
   return content.replace(/^---\r?\n[\s\S]*?\r?\n---\s*/, "").trim();
+};
+
+export const loadBundledFastDiagramSkill = async () => {
+  const content = await loadBundledSkill("drawsy-fast-diagrams");
+  if (!content) {
+    throw new Error("The bundled Drawsy Fast diagrams skill is unavailable.");
+  }
+  return content;
 };
 
 const readFrontmatterValue = (frontmatter: string, key: string) => {
@@ -896,7 +911,7 @@ const resolveControlIcon = async ({
   (await readLocalControlIcon(localPath, directory)) ||
   validRemoteIconUrl(remoteUrl);
 
-const loadBundledSkills = async (): Promise<AgentSkillOption[]> => {
+export const loadBundledSkills = async (): Promise<AgentSkillOption[]> => {
   try {
     const entries = await readdir(bundledSkillRoot, { withFileTypes: true });
     const skills = await Promise.all(
@@ -2014,6 +2029,9 @@ export class CodexAppServer {
             return [];
           }
           const tools = isRecord(server.tools) ? Object.keys(server.tools) : [];
+          if (tools.some(blockedCapability)) {
+            return [];
+          }
           return [
             {
               name: server.name,
@@ -2109,7 +2127,7 @@ export class CodexAppServer {
         threadId: this.threadId,
         cwd: this.folderPath,
         approvalPolicy: "never",
-        sandboxPolicy: this.sandboxPolicy(nextAccessMode),
+        sandboxPolicy: this.sandboxPolicy(nextAccessMode, nextInternet),
         ...(selectedModel ? { model: selectedModel.model } : {}),
         ...(settings.effort ? { effort: settings.effort } : {}),
       });
@@ -2133,13 +2151,16 @@ export class CodexAppServer {
     return { agent: this.metadata, controls: await this.getControls() };
   }
 
-  private sandboxPolicy(accessMode = this.accessMode): JsonObject {
+  private sandboxPolicy(
+    accessMode = this.accessMode,
+    internetEnabled = this.internetEnabled
+  ): JsonObject {
     return accessMode === "readOnly"
-      ? { type: "readOnly", networkAccess: true }
+      ? { type: "readOnly", networkAccess: internetEnabled }
       : {
           type: "workspaceWrite",
           writableRoots: [this.folderPath],
-          networkAccess: true,
+          networkAccess: internetEnabled,
           excludeTmpdirEnvVar: true,
           excludeSlashTmp: true,
         };
