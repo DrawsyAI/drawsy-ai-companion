@@ -1,13 +1,16 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, realpath, rm } from "node:fs/promises";
+import { mkdir, readFile, readdir, realpath, rm, stat } from "node:fs/promises";
 import { createServer } from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   getDeveloperInstructions,
-  loadBundledFastDiagramSkill
+  loadBundledFastDiagramSkill,
+  loadBundledSkill,
+  loadBundledSkills
 } from "./codex-app-server.js";
 import { resolveOpenCodeBinary } from "./opencode-binary.js";
 import {
@@ -24,6 +27,7 @@ import {
   type AgentMetadata,
   type AgentModelOption,
   type AgentPromptTag,
+  type AgentSkillOption,
   type AgentSettingsPatch,
   type AiResourceId,
   type BridgeEvent,
@@ -104,6 +108,262 @@ const stringArray = (value: unknown) =>
     ? value.filter((entry): entry is string => typeof entry === "string")
     : [];
 
+const OPEN_CODE_BLOCKED_CAPABILITY =
+  /(^|[-_./@\s])(browser|chrome|computer)([-_./@\s]|$)/i;
+
+export const openCodeInternetControl = (input: {
+  platform: string;
+  isolateProcessGroup: boolean;
+}) => {
+  // The Linux bwrap path currently preserves networking so OpenCode can reach
+  // the local Drawsy control plane. Do not advertise a block that it cannot
+  // enforce, regardless of whether process-group isolation is enabled.
+  const canDisable = input.platform !== "linux";
+  return {
+    canDisable,
+    ...(!canDisable
+      ? {
+          reason:
+            "Internet cannot be safely disabled in this OpenCode session on Linux."
+        }
+      : {})
+  };
+};
+
+const openCodeProjectSkillDirectories = async (workspaceRoot: string) => {
+  if (!workspaceRoot) return [];
+  const ancestors: string[] = [];
+  let current = path.resolve(workspaceRoot);
+  while (true) {
+    ancestors.unshift(current);
+    if (await stat(path.join(current, ".git")).catch(() => null)) break;
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return ancestors.flatMap((directory) => [
+    path.join(directory, ".claude", "skills"),
+    path.join(directory, ".agents", "skills"),
+    path.join(directory, ".opencode", "skills")
+  ]);
+};
+
+const codexPluginSkillDirectories = async (codexHome: string) => {
+  const cacheRoot = path.join(codexHome, "plugins", "cache");
+  const resolvedCacheRoot = await realpath(cacheRoot).catch(() => null);
+  if (!resolvedCacheRoot) return [];
+
+  const roots: string[] = [];
+  const registries = await readdir(resolvedCacheRoot, { withFileTypes: true }).catch(
+    () => []
+  );
+  for (const registry of registries) {
+    if (!registry.isDirectory()) continue;
+    const plugins = await readdir(path.join(resolvedCacheRoot, registry.name), {
+      withFileTypes: true
+    }).catch(() => []);
+    for (const plugin of plugins) {
+      if (!plugin.isDirectory()) continue;
+      const versions = await readdir(
+        path.join(resolvedCacheRoot, registry.name, plugin.name),
+        { withFileTypes: true }
+      ).catch(() => []);
+      for (const version of versions) {
+        if (!version.isDirectory()) continue;
+        const candidate = path.join(
+          resolvedCacheRoot,
+          registry.name,
+          plugin.name,
+          version.name,
+          "skills"
+        );
+        const resolvedCandidate = await realpath(candidate).catch(() => null);
+        if (
+          resolvedCandidate &&
+          isWithinDirectory(resolvedCacheRoot, resolvedCandidate) &&
+          (await stat(resolvedCandidate).catch(() => null))?.isDirectory()
+        ) {
+          roots.push(resolvedCandidate);
+        }
+      }
+    }
+  }
+  return roots;
+};
+
+/** Returns OpenCode skill sources from lowest to highest precedence. */
+export const openCodeSkillDirectories = async (
+  workspaceRoot: string,
+  homeDirectory = os.homedir()
+) => {
+  const codexHome = process.env.CODEX_HOME || path.join(homeDirectory, ".codex");
+  const candidates = [
+    path.join(homeDirectory, ".claude", "skills"),
+    path.join(homeDirectory, ".agents", "skills"),
+    path.join(homeDirectory, ".config", "opencode", "skills"),
+    path.join(codexHome, "skills"),
+    path.join(codexHome, "skills", ".system"),
+    ...(await codexPluginSkillDirectories(codexHome)),
+    ...(await openCodeProjectSkillDirectories(workspaceRoot))
+  ];
+  const roots: string[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    const resolved = await realpath(candidate).catch(() => null);
+    if (!resolved || seen.has(resolved)) continue;
+    if (!(await stat(resolved).catch(() => null))?.isDirectory()) continue;
+    seen.add(resolved);
+    roots.push(resolved);
+  }
+  return roots;
+};
+
+export const openCodeSkillSources = (
+  hostDirectories: string[],
+  workspaceRoot: string,
+  platform: string
+) =>
+  hostDirectories.map((hostPath, index) => {
+    const workspace = workspaceRoot ? path.resolve(workspaceRoot) : "";
+    const isWorkspaceSkill =
+      workspace && isWithinDirectory(workspace, hostPath);
+    const isMaskedHomeSkill =
+      platform === "linux" &&
+      ["/home", "/root"].some(
+        (root) => hostPath === root || hostPath.startsWith(`${root}/`)
+      );
+    return {
+      hostPath,
+      sessionPath:
+        isMaskedHomeSkill && !isWorkspaceSkill
+          ? path.join("/tmp", "drawsy-opencode-skills", String(index))
+          : hostPath
+    };
+  });
+
+export const openCodeInlineSkillConfig = (skillDirectories: string[]) =>
+  JSON.stringify({ skills: skillDirectories });
+
+const frontmatterValue = (frontmatter: string, key: string) => {
+  const match = frontmatter.match(
+    new RegExp(`^${key}:\\s*(?:"([^"]*)"|'([^']*)'|(.*?))\\s*$`, "m")
+  );
+  return (match?.[1] || match?.[2] || match?.[3] || "").trim();
+};
+
+const isWithinDirectory = (directory: string, candidate: string) => {
+  const relative = path.relative(directory, candidate);
+  return (
+    relative === "" ||
+    (!relative.startsWith("..") && !path.isAbsolute(relative))
+  );
+};
+
+/** Reads OpenCode's documented local skill directories without following links
+ * outside each root. Earlier roots win when the same skill name is installed
+ * at both project and user scope.
+ */
+export const discoverOpenCodeSkills = async (
+  roots: string[]
+): Promise<AgentSkillOption[]> => {
+  const skills = new Map<string, AgentSkillOption>();
+  for (const root of roots) {
+    const resolvedRoot = await realpath(root).catch(() => null);
+    if (!resolvedRoot) continue;
+    const entries = await readdir(resolvedRoot, { withFileTypes: true }).catch(
+      () => []
+    );
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const skillPath = path.join(resolvedRoot, entry.name, "SKILL.md");
+      const resolvedSkillPath = await realpath(skillPath).catch(() => null);
+      if (
+        !resolvedSkillPath ||
+        !isWithinDirectory(resolvedRoot, resolvedSkillPath)
+      ) {
+        continue;
+      }
+      const file = await stat(resolvedSkillPath).catch(() => null);
+      if (!file?.isFile()) continue;
+      const content = await readFile(resolvedSkillPath, "utf8").catch(() => "");
+      const frontmatter = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+      if (!frontmatter) continue;
+      const metadata = frontmatter[1] || "";
+      const name = frontmatterValue(metadata, "name");
+      const description = frontmatterValue(metadata, "description");
+      if (
+        !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name) ||
+        name !== entry.name ||
+        name.length > 64 ||
+        !description ||
+        OPEN_CODE_BLOCKED_CAPABILITY.test(name) ||
+        skills.has(name)
+      ) {
+        continue;
+      }
+      skills.set(name, {
+        name,
+        displayName: name,
+        description,
+        path: resolvedSkillPath
+      });
+    }
+  }
+  return [...skills.values()].sort((left, right) =>
+    left.displayName.localeCompare(right.displayName)
+  );
+};
+
+export const availableOpenCodeSkills = async (
+  workspaceRoot: string,
+  homeDirectory = os.homedir()
+): Promise<AgentSkillOption[]> => {
+  const nativeSkills = await discoverOpenCodeSkills(
+    (await openCodeSkillDirectories(workspaceRoot, homeDirectory)).reverse()
+  );
+  const nativeNames = new Set(nativeSkills.map((skill) => skill.name));
+  const bundledSkills = (await loadBundledSkills()).filter(
+    (skill) =>
+      !OPEN_CODE_BLOCKED_CAPABILITY.test(skill.name) &&
+      !OPEN_CODE_BLOCKED_CAPABILITY.test(skill.description)
+  );
+  return [
+    ...nativeSkills,
+    ...bundledSkills.filter((skill) => !nativeNames.has(skill.name))
+  ];
+};
+
+export const openCodeMcpServerOptions = (
+  value: unknown
+): AgentControls["mcpServers"] =>
+  Object.entries(toRecord(value))
+    .flatMap(([name, statusValue]) => {
+      if (!name.trim() || OPEN_CODE_BLOCKED_CAPABILITY.test(name)) return [];
+      const status = toRecord(statusValue);
+      const tools = toRecord(status.tools);
+      if (
+        Object.keys(tools).some((toolName) =>
+          OPEN_CODE_BLOCKED_CAPABILITY.test(toolName)
+        )
+      ) {
+        return [];
+      }
+      return [
+        {
+          name,
+          toolCount: Object.keys(tools).length,
+          authStatus: stringValue(status.status) || "connecting"
+        }
+      ];
+    })
+    .sort((left, right) =>
+      left.name === "drawsy"
+        ? -1
+        : right.name === "drawsy"
+        ? 1
+        : left.name.localeCompare(right.name)
+    );
+
 export type OpenCodeTurnFailure = {
   code: "opencode_provider_access_denied" | "opencode_provider_error";
   message: string;
@@ -150,7 +410,8 @@ export const openCodeTurnFailureFromEvent = (
 
 export const createOpenCodePermissionRules = (
   accessMode: AgentAccessMode,
-  runtimePath?: string
+  runtimePath?: string,
+  skillsEnabled = true
 ): OpenCodePermissionRule[] => {
   return [
     { permission: "external_directory", pattern: "*", action: "deny" },
@@ -163,6 +424,16 @@ export const createOpenCodePermissionRules = (
           pattern: `${path.join(runtimePath, directory)}/*`,
           action: "allow" as const
         }))
+      : []),
+    ...(skillsEnabled
+      ? [
+          { permission: "skill", pattern: "*", action: "allow" as const },
+          ...["*browser*", "*chrome*", "*computer*"].map((pattern) => ({
+            permission: "skill",
+            pattern,
+            action: "deny" as const
+          }))
+        ]
       : []),
     { permission: "webfetch", pattern: "*", action: "deny" },
     { permission: "websearch", pattern: "*", action: "deny" },
@@ -275,6 +546,7 @@ const createSandboxProfile = (input: {
   folderPath: string;
   runtimePath: string;
   executablePath: string;
+  skillDirectories: string[];
   accessMode: AgentAccessMode;
   internetEnabled: boolean;
 }) => {
@@ -294,7 +566,8 @@ const createSandboxProfile = (input: {
     input.runtimePath,
     input.executablePath,
     drawsyRuntimePath,
-    drawsyPackagePath
+    drawsyPackagePath,
+    ...input.skillDirectories
   ];
   const metadataPaths = [
     ...new Set(readablePaths.flatMap((candidate) => ancestorPaths(candidate)))
@@ -381,7 +654,11 @@ const linuxExecutableMountArguments = (
   ];
 };
 
-const runtimeEnvironment = (runtimePath: string, previewPort: number | null) => {
+const runtimeEnvironment = (
+  runtimePath: string,
+  previewPort: number | null,
+  skillDirectories: string[]
+) => {
   const executablePath = executableEnvironment().PATH;
   const environment: NodeJS.ProcessEnv = {
     PATH: executablePath,
@@ -393,7 +670,10 @@ const runtimeEnvironment = (runtimePath: string, previewPort: number | null) => 
     XDG_CACHE_HOME: path.join(runtimePath, "cache"),
     XDG_STATE_HOME: path.join(runtimePath, "state"),
     TMPDIR: path.join(runtimePath, "tmp"),
-    OPENCODE_PURE: "1"
+    OPENCODE_PURE: "1",
+    ...(skillDirectories.length
+      ? { OPENCODE_CONFIG_CONTENT: openCodeInlineSkillConfig(skillDirectories) }
+      : {})
   };
   if (previewPort) {
     environment.PORT = String(previewPort);
@@ -410,6 +690,7 @@ const createLinuxSandboxArguments = (input: {
   accessMode: AgentAccessMode;
   executable: string;
   port: number;
+  skillSources: Array<{ hostPath: string; sessionPath: string }>;
 }) => {
   const folderParent = path.dirname(input.folderPath);
   const runtimeParent = path.dirname(input.runtimePath);
@@ -436,6 +717,17 @@ const createLinuxSandboxArguments = (input: {
     "/root",
     "--tmpfs",
     "/tmp",
+    ...(input.skillSources.some(({ hostPath, sessionPath }) => hostPath !== sessionPath)
+      ? [
+          "--dir",
+          "/tmp/drawsy-opencode-skills",
+          ...input.skillSources.flatMap(({ hostPath, sessionPath }) =>
+            hostPath === sessionPath
+              ? []
+              : ["--dir", sessionPath, "--ro-bind", hostPath, sessionPath]
+          )
+        ]
+      : []),
     "--tmpfs",
     "/var/tmp",
     "--tmpfs",
@@ -599,9 +891,19 @@ export class OpenCodeAppServer {
       );
     }
     const openCodeBinary = await realpath(resolvedOpenCodeBinary);
+    const skillDirectories = await openCodeSkillDirectories(this.folderPath);
+    const skillSources = openCodeSkillSources(
+      skillDirectories,
+      this.folderPath,
+      process.platform
+    );
+    const sessionSkillDirectories = skillSources.map(
+      (source) => source.sessionPath
+    );
     const environment = runtimeEnvironment(
       this.runtimePath,
-      this.session.previewPort
+      this.session.previewPort,
+      sessionSkillDirectories
     );
     const isMacOS = process.platform === "darwin";
     const command = isMacOS ? "/usr/bin/sandbox-exec" : "/usr/bin/bwrap";
@@ -612,6 +914,7 @@ export class OpenCodeAppServer {
             folderPath: this.folderPath,
             runtimePath: this.runtimePath,
             executablePath: openCodeBinary,
+            skillDirectories: sessionSkillDirectories,
             accessMode: this.accessMode,
             internetEnabled: this.internetEnabled
           }),
@@ -627,7 +930,8 @@ export class OpenCodeAppServer {
           runtimePath: this.runtimePath,
           accessMode: this.accessMode,
           executable: openCodeBinary,
-          port
+          port,
+          skillSources
         });
     const child = spawn(
       command,
@@ -903,7 +1207,10 @@ export class OpenCodeAppServer {
   }
 
   private permissionRules() {
-    return createOpenCodePermissionRules(this.accessMode, this.runtimePath ?? undefined);
+    return createOpenCodePermissionRules(
+      this.accessMode,
+      this.runtimePath ?? undefined
+    );
   }
 
   private async createOpenCodeSession() {
@@ -1007,11 +1314,31 @@ export class OpenCodeAppServer {
         "OpenCode starts in Drawsy's isolated mode and has no plugins."
       );
     }
+    const availableSkills = await availableOpenCodeSkills(this.folderPath);
+    for (const skill of tags.skills) {
+      if (
+        !availableSkills.some(
+          (option) => option.name === skill.name && option.path === skill.path
+        )
+      ) {
+        throw new Error(`Skill is not available: ${skill.name}`);
+      }
+    }
     const fastMode = generationMode === "fast";
     const pointerDrawMode = drawMode && !fastMode;
     const turnSkills = fastMode
-      ? tags.skills.filter((skill) => skill.name !== "drawsy-teaching-diagrams")
+      ? tags.skills.filter(
+          (skill) =>
+            skill.name !== "drawsy-teaching-diagrams" &&
+            skill.name !== "drawsy-fast-diagrams"
+        )
       : tags.skills;
+    const selectedSkillBodies = await Promise.all(
+      turnSkills.map((skill) => loadBundledSkill(skill.name, skill.path))
+    );
+    const nativeTurnSkills = turnSkills.filter(
+      (_, index) => selectedSkillBodies[index] === null
+    );
     const fastSkillText = fastMode
       ? await loadBundledFastDiagramSkill()
       : null;
@@ -1045,14 +1372,22 @@ export class OpenCodeAppServer {
         });
       }
     }
-    if (turnSkills.length) {
+    for (const [index, skill] of turnSkills.entries()) {
+      const body = selectedSkillBodies[index];
+      if (!body) continue;
       parts.push({
         type: "text",
-        text: `The user selected these project skills: ${turnSkills
-          .map((skill) => `${skill.name} (${skill.path})`)
+        text: `Selected Drawsy skill "${skill.name}":\n${body}`
+      });
+    }
+    if (nativeTurnSkills.length) {
+      parts.push({
+        type: "text",
+        text: `The user selected these OpenCode skills: ${nativeTurnSkills
+          .map((skill) => skill.name)
           .join(
             ", "
-          )}. Use them when relevant; never access a path outside the current Drawsy workspace.`
+          )}. Consider them for this request and load any relevant skill with OpenCode's native skill tool by its exact name.`
       });
     }
     if (connectors.length) {
@@ -1172,14 +1507,19 @@ export class OpenCodeAppServer {
   }
 
   async getControls(): Promise<AgentControls> {
-    const models = await this.availableModels();
-    const apiKeyProviders = await this.apiKeyProviders();
-    const mcpStatuses = await this.request<JsonObject>("/mcp");
-    const drawsyStatus = toRecord(mcpStatuses.drawsy);
-    const tools = toRecord(drawsyStatus.tools);
+    const [models, apiKeyProviders, mcpStatuses, skills] = await Promise.all([
+      this.availableModels(),
+      this.apiKeyProviders(),
+      this.request<JsonObject>("/mcp"),
+      availableOpenCodeSkills(this.folderPath)
+    ]);
     return {
       accessMode: this.accessMode,
       internetEnabled: this.internetEnabled,
+      internetControl: openCodeInternetControl({
+        platform: process.platform,
+        isolateProcessGroup: this.session.isolateProcessGroup
+      }),
       models: models.map((model) => ({
         id: `${model.providerId}:${model.modelId}`,
         model: model.modelId,
@@ -1192,15 +1532,9 @@ export class OpenCodeAppServer {
         defaultEffort: model.efforts[0]?.id || "default",
         isDefault: model.isDefault
       })),
-      skills: [],
+      skills,
       plugins: [],
-      mcpServers: [
-        {
-          name: "drawsy",
-          toolCount: Object.keys(tools).length,
-          authStatus: stringValue(drawsyStatus.status) || "connecting"
-        }
-      ],
+      mcpServers: openCodeMcpServerOptions(mcpStatuses),
       apiKeyProviders
     };
   }
@@ -1210,12 +1544,10 @@ export class OpenCodeAppServer {
       throw new Error("Wait for the current OpenCode turn to finish.");
     }
     if (
-      settings.internetEnabled === false &&
-      process.platform === "linux" &&
-      this.session.isolateProcessGroup
+      settings.internetEnabled === false && process.platform === "linux"
     ) {
       throw new Error(
-        "Hosted OpenCode keeps Internet enabled. Disabling it safely requires a separate Linux network bridge for the local OpenCode and Drawsy MCP control planes; Drawsy will not claim that boundary before it exists."
+        "Internet cannot be safely disabled in this OpenCode session on Linux because its sandbox does not isolate outbound networking."
       );
     }
     const models = await this.availableModels();

@@ -1823,7 +1823,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     assert.deepEqual(turn.params.sandboxPolicy, {
       type: "workspaceWrite",
       writableRoots: [canonicalFolder],
-      networkAccess: true,
+      networkAccess: false,
       excludeTmpdirEnvVar: true,
       excludeSlashTmp: true,
     });

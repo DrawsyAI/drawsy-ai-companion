@@ -333,6 +333,7 @@ export type AgentMcpOption = {
 export type AgentControls = {
   accessMode: AgentAccessMode;
   internetEnabled: boolean;
+  internetControl?: { canDisable: boolean; reason?: string };
   models: AgentModelOption[];
   skills: AgentSkillOption[];
   plugins: AgentPluginOption[];
