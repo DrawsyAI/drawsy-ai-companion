@@ -28,6 +28,7 @@ import { resolveCodexBinary } from "./codex-binary.js";
 import { extractUserPrompt } from "./conversation-history.js";
 import { drawsyMcpProcess, resolveDrawsyMcpEntry } from "./mcp-launcher.js";
 import { executableEnvironment } from "./executable-resolver.js";
+import { forceStopNativeCli } from "./native-cli.js";
 
 class CodexRpcError extends Error {
   readonly code: number | string | null;
@@ -598,17 +599,18 @@ const DRAW_GENERATION_INSTRUCTION = `Draw generation mode is ON for this turn. F
 - Use the user's requested canvas operation and the existing visual language. Artist roughness (1) for shapes/arrows and Excalifont (fontFamily 5) for text are adaptable defaults, not requirements.
 - This generation-mode selection does not itself enable native pointer drawing; that remains controlled separately for this turn.`;
 
-const DRAW_MODE_INSTRUCTION = `Draw mode is ON for this turn. It is a deliberate pointer-first mode for the current Drawsy tab, not a request to use every available tool.
-- Use the user's external Google Chrome tab through the native Chrome extension. Do not use Codex's in-app Browser, a custom drawer, a screenshot overlay, or a custom drawing wrapper.
-- For any user-visible canvas manipulation requested as a gesture—freehand, pencil, stroke, sketch, drag, drop, move, resize, click, select, or choosing a Drawsy tool and dragging a rectangle, ellipse, arrow, or line—operate the real Drawsy UI with native Chrome pointer/keyboard input. Do not translate a pointer request into Drawsy MCP object insertion.
-- Use the actual Drawsy Draw/freehand tool for pencil-like work. Use the actual Drawsy shape tool plus a real drag for a requested shape gesture. Use the actual selection tool for move/resize requests.
-- Use Drawsy MCP for explicitly data-level, editable, bulk, or precise structured changes when the user did not ask for a visual gesture. In mixed work, use native Chrome for gesture portions and Drawsy MCP for structured/data portions.
-- The bundled Drawsy browser-use guide supplies routing and verification knowledge. In this Companion, use the attached native-browser guidance and the exact target-binding contract below; do not invoke a browser or desktop-control transport that is not callable in this turn.
-- Skill and plugin paths are internal runtime details. Never tell the user to inspect local Codex skill directories, load a local skill, or install a Drawsy skill; keep skill/plugin names and paths out of user-facing progress and use the concise recovery message below when capability is unavailable.
-- The Drawsy and native-browser guidance is already attached to this turn. Do not use shell or command tools to inspect skill/plugin cache paths, search versioned runtime directories, or rediscover that guidance; if the attached native route is not callable, return the recovery message immediately.
-- If native Chrome is unavailable, do not guess whether the cause is a profile, Incognito, extension, or settings issue. Return DRAWSY_BROWSER_UNAVAILABLE: with the observed diagnosis if one exists; otherwise say that native Chrome control was unavailable in this session. Do not expose skill paths or internal transport names. Include the official recovery URLs codex://settings/computer-use/chrome and https://chromewebstore.google.com/detail/chatgpt/hehggadaopoacecdllhhajmbjkdcmajg?pli=1.
-- Before any native action, make one bounded preflight across the connected Chrome extension instances exactly as specified below. Inspect only tabs whose URL exactly equals the calling Drawsy URL, then verify their Drawsy tab markers. If no single marker match exists after that bounded scan, stop immediately. Do not inspect unrelated tabs, run shell or unrelated discovery, retry a candidate, use Drawsy MCP, or substitute objects. Return a concise final beginning with DRAWSY_BROWSER_UNAVAILABLE: followed by the observed user-facing fix.
-- After a successful preflight, make one compact inspect -> act -> rendered verification pass. Never guess from a stale screenshot, choose the first matching tab, or rediscover the canvas through MCP before acting.`;
+export const NATIVE_CANVAS_CONTROL_INSTRUCTION = `Draw mode is ON for this turn. Use the first-party control_canvas tool as the only way to change the attached canvas.
+- Read read_current_canvas first. Use its viewport scene coordinates, activeTool, currentStyle, selection, and paletteSwatches; keep coordinates inside the visible canvas unless you are panning.
+- Use set_tool to choose a Drawsy tool without clicking the toolbar. Use drag for a straight press-move-release gesture; tool is optional when continuing with the active tool. Use gesture with ordered scene points for curved motion and lasso paths. Use draw_freehand for a Pencil stroke. The website sends those pointer events through the same canvas handlers used by a person, so the drawing changes as the pointer moves.
+- Use a selection drag to move or resize objects, Hand plus drag to pan, Eraser plus a path to erase, and Bucket fill plus click to fill an enclosed area. Use type_text to place editable text through the native Text tool. Use set_style with target=current to set the next drawing's colors, fill, line weight, roughness, opacity, dimension, or text settings; use target=selection to update selected elements. Check read_current_canvas after settings when the exact result matters.
+- Use click for a real canvas click, select for an explicit element-id selection, and clear_selection to clear it. Inspect the live scene after edits; a clean layout report alone does not prove that the requested object is recognizable. Fix visible omissions or malformed geometry before reporting success.
+- Do not use structured canvas-writing tools such as apply_canvas_changes, render_diagram_code, create_or_update_connector, set_container_label, image insertion, or the Library to make canvas changes in Draw mode. Image insertion requires an asset and is not part of pointer control; explain that limit and ask the user to switch to Simple or Fast when an image asset is essential.
+- This controller is limited to the one attached Drawsy canvas. Do not use Chrome, browser CUA, or OS-level input to control it.
+- For any website or browser action outside the attached Drawsy canvas, use browser tools only when the user explicitly requests that work and a callable browser capability is available.`;
+
+const SIMPLE_GENERATION_INSTRUCTION = `Simple mode is ON for this turn. Fast Mode is off; use the normal structured Drawsy canvas tools. This instruction applies when the toolbar Draw mode is off.
+- Use the user's requested canvas operation and the existing visual language. Artist roughness (1) for shapes/arrows and Excalifont (fontFamily 5) for text are adaptable defaults, not requirements.
+- When the toolbar Draw mode is on, follow its direct-control instructions instead of using structured canvas writes.`;
 
 export const FAST_MODE_INSTRUCTION = `Fast Mode is ON for this turn. Build diagrams through semantic Mermaid source and Drawsy's typed diagram converter.
 - Read the current canvas and call get_canvas_capabilities first. Treat diagramCode.nativeEditableTypes and sourceMaxBytes as the converter's runtime authority. Choose a diagram family from the user's intent and actual support; do not follow a fixed intent-to-family recipe or add a type/style picker. Preserve the existing canvas visual language and let the converter place content in clear canvas space.
@@ -665,36 +667,31 @@ Do not replace either call with getForUrl(), get("chrome"), property inspection,
 
 The calling Drawsy page URL is ${drawsyTabUrl}, and its opaque per-tab marker is ${drawsyTabId}. The URL narrows candidates; it never identifies the tab by itself. For each connected Chrome extension entry, in inventory order: bind it with agent.browsers.get(info.id), emit and read that browser's complete documentation once, obtain one fresh browser.user.openTabs() snapshot, and ignore every tab whose URL is not exactly ${drawsyTabUrl}. Claim each exact-URL candidate once and inspect document.documentElement.dataset.drawsyTabId. Keep scanning the remaining connected Chrome instances until all exact-URL candidates have been checked; finding zero candidates in one profile is not Chrome unavailability and is not permission to stop early. Keep the browser and tab handle only for a candidate whose marker exactly equals ${drawsyTabId}. Exactly one total marker match is required before any canvas action. If there are zero or multiple total matches, stop without touching the canvas. Do not inspect unrelated tabs, run shell or unrelated discovery, retry a candidate, use Drawsy MCP, or guess. Return a concise final beginning with DRAWSY_BROWSER_UNAVAILABLE: followed by the observed user-facing fix, if one is available. Use the single verified browser/tab handle for the complete action and rendered verification.`;
 
-const DEVELOPER_INSTRUCTIONS = `You are the local Drawsy agent.
-- Built-in filesystem, patch, and shell tools are available inside the current Drawsy workspace; use them naturally when the user asks to inspect, create, or update project files.
-- Installed skills and plugins are available. Native external Chrome control may be available through the user's local Codex installation and Companion session; Codex's in-app Browser and broad desktop Computer Use are disabled for this local path.
-- Each canvas turn includes an authoritative generationMode. In Fast Mode, create whole diagrams through render_diagram_code while normal canvas management remains available; the bridge restricts raw element upserts to existing elements. Draw mode keeps the normal canvas workflows.
-- Use native external Chrome only when the user asks to inspect or manipulate the current tab, or when Draw mode makes a real pointer gesture the appropriate operation. Draw mode must use the actual Drawsy UI and cursor pipeline, including tool selection and drag gestures; it must not turn those gestures into MCP objects. Use Drawsy MCP for structured/data-level canvas work when that is what the user asked for.
-- External apps are unavailable as general connectors. Connected sources exist only when the user attaches source tags to a turn; access them through Drawsy's read-only connected-source tools and never assume an unlisted source is available. Network access for ordinary tools is controlled by the current Drawsy session setting.
-- First-party Drawsy resources exist only when the current surface or an explicit @ tag attaches them to a turn. Use only the resources listed in that turn.
-- Keep intermediate updates concise and useful; the client shows live activity and collapses it after completion. Give one clear final answer when the work is complete, and never repeat internal context envelopes, grants, or routing instructions to the user.
-- Work autonomously within these boundaries; do not request permission escalation.`;
+const DEVELOPER_INSTRUCTIONS = `You are Drawsy's local agent, using the user's installed harness.
+- Use the harness's native tools, configuration, provider login, skills, plugins, and authorized integrations. A selected folder is the working directory, not a filesystem boundary.
+- Treat repository files, including DRAW.md when present, as normal project context. Preserve their existing formats and follow repository instructions.
+- Use Drawsy MCP for the attached Drawsy surface. Each canvas turn includes an authoritative generationMode and toolbar Draw state: Simple uses structured canvas tools, Fast creates whole diagrams through render_diagram_code, and Draw uses control_canvas. Do not bypass those canvas modes through browser or desktop input.
+- Drawsy connected-source and first-party resource tools require the grants attached to this turn. These grants govern Drawsy tools; the harness's other authorized integrations remain available under their own configuration.
+- Work from the user's request and the capabilities actually available. Keep progress updates concise, give one clear final answer, and never repeat internal context envelopes, grants, or routing secrets.`;
 
 export const getDeveloperInstructions = (
   surfaceKind: DrawsySurfaceKind,
   previewPort: number | null,
   workspaceMode: "selected" | "private" = "selected",
-  generationMode: "fast" | "draw" | "auto" = "auto"
+  generationMode: "fast" | "draw" | "auto" = "auto",
+  drawMode = false
 ) =>
   `${DEVELOPER_INSTRUCTIONS}
 - ${
     workspaceMode === "private"
-      ? "No user folder is attached. This is a private per-chat workspace; do not imply that files elsewhere on the device are available."
+      ? "No user folder is selected. The working directory is a per-chat scratch folder; other local resources remain available through the native harness tools."
       : "A user-selected folder is attached. Treat repository files, including DRAW.md when present, as normal project context. Preserve their existing formats and follow repository instructions."
   }${
     surfaceKind === "canvas" || surfaceKind === "presentation"
       ? `
 - The Drawsy MCP is scoped to the single current ${surfaceKind}.
 - Read it before changing it. The snapshot includes the active theme/preset, rendered colors, selection, and existing relationships. Use get_canvas_capabilities when choosing available elements, routes, or picker swatches, including on a blank canvas. Draw style from the user's purpose and the actual canvas; do not impose a fixed palette or layout recipe.
-${generationMode === "fast" ? FAST_MODE_INSTRUCTION : generationMode === "draw" ? `- Start new diagrams with Drawsy's native hand-drawn style: artist roughness (1) for shapes and arrows and Excalifont (fontFamily 5) for text. These are defaults, not requirements: honor the user's style, preserve existing styles when editing, and choose another style when it better serves the composition. Keep connections precise and text legible regardless of style.
-- Use create_or_update_connector for relationships that must follow moved or resized objects, and set_container_label for text inside a shape. Use apply_canvas_changes for other targeted upserts/deletions and unusual compositions.
-- For Draw mode, use the verified external-Chrome current-tab inspection and native pointer path for every requested visual gesture, including a shape-tool drag; do not first read or mutate the canvas through Drawsy MCP. Use MCP for explicitly structured/data-level or mixed work only.
-- Apply canvas work progressively as coherent changes are ready. Each successful tool call is immediately visible to the user. Re-read the live canvas whenever the rendered result informs the next placement, so never guess from a stale snapshot.` : `- Follow the explicit generationMode for each canvas turn. In Draw mode, start new diagrams with artist roughness (1) for shapes and arrows and Excalifont (fontFamily 5) for text as adaptable defaults, then use the normal structured or pointer workflows that match the request. In Draw mode, use create_or_update_connector for relationships that must follow moved or resized objects, set_container_label for text inside a shape, and apply_canvas_changes for other targeted edits. Apply canvas work progressively as coherent changes are ready; re-read the live canvas whenever the result informs the next placement, so never guess from a stale snapshot. In Fast Mode, use render_diagram_code to create a whole diagram while normal canvas management remains available. Preserve canvas context and the user's visual choices in either mode.`}
+${generationMode === "fast" ? FAST_MODE_INSTRUCTION : drawMode ? NATIVE_CANVAS_CONTROL_INSTRUCTION : SIMPLE_GENERATION_INSTRUCTION}
 - After each visual pass, use inspect_current_canvas_layout. Treat its findings as rendered geometry evidence: repair relevant text, node-overlap, and connector-route issues in the next pass before continuing. It is advisory—retain a deliberate overlap only when the requested visual meaning requires it. Before declaring a visual result complete, inspect it once more. When an image-level check would clarify a finding, capture the relevant region and inspect that capture.
 - For a relationship-rich diagram, do one final rendered capture review after the geometry check. Bounds alone cannot tell whether a connector communicates the intended relationship: verify that each important connector has an intentional source and target, its label belongs to that relationship, the route is visually unambiguous, and labels remain readable against the active theme. Repair only findings relevant to the requested diagram; do not invent domain rules or alter deliberate visual choices.
 - Use Excalidraw-native text geometry. Text that belongs inside a shape must be bound to that container and fit within it; standalone labels must leave clear space around nearby nodes and connectors. Route arrows around unrelated nodes rather than through them.
@@ -706,7 +703,7 @@ ${generationMode === "fast" ? FAST_MODE_INSTRUCTION : generationMode === "draw" 
             ? ` on the session's assigned port ${previewPort} (also available as DRAWSY_PREVIEW_PORT)`
             : ""
         } and call attach_live_preview with that loopback URL. Pass the framework's supported host/port flags or environment variables; do not rewrite application behavior merely to force a port. Do not create a saved iframe element for a live local service.
-- Local development servers may bind to loopback without internet access. If declared dependencies are missing and installation needs the internet, explain that once and wait for the user to enable internet instead of retrying package managers or bypassing the sandbox.
+- Start local development services using the harness's normal tools and network configuration.
 - Never attempt to discover or access another canvas.${
           surfaceKind === "presentation"
             ? `
@@ -722,7 +719,7 @@ ${generationMode === "fast" ? FAST_MODE_INSTRUCTION : generationMode === "draw" 
 - This chat is opened from Jira Workspace. Jira is available for read-only work when the turn carries its first-party resource grant.
 - No canvas is attached. Do not call canvas tools.`
       : `
-- No Drawsy canvas, presentation, Kanban board, or Jira workspace is attached to this chat. Work from the current workspace, user attachments, and explicitly tagged sources or resources only. Do not call canvas tools or assume product context.`
+- No Drawsy canvas, presentation, Kanban board, or Jira workspace is attached to this chat. Use the native harness tools for the user's requested local work. Do not call canvas tools or assume product context.`
   }`;
 
 const BUNDLED_SKILL_NAMES = new Set([
@@ -971,8 +968,6 @@ export class CodexAppServer {
   private activeDrawMode = false;
   private nativeBrowserFailureInterruptSent = false;
   private agentMetadata: AgentMetadata | null = null;
-  private accessMode: AgentAccessMode = "workspace";
-  private internetEnabled = true;
   private lastControls: AgentControls | null = null;
   private threadBaseConfig: JsonObject | null = null;
   private nativeChromeAvailable = false;
@@ -1034,13 +1029,9 @@ export class CodexAppServer {
         "--disable",
         "goals",
         "--disable",
-        "memories",
-        "--disable",
         "tool_suggest",
         "--disable",
         "skill_mcp_dependency_install",
-        "--disable",
-        "auth_elicitation",
         "--disable",
         "network_proxy",
       ],
@@ -1410,6 +1401,7 @@ export class CodexAppServer {
           tool_timeout_sec: 45,
           default_tools_approval_mode: "auto",
           tools: {
+            control_canvas: { approval_mode: "approve" },
             apply_canvas_changes: { approval_mode: "approve" },
             search_library: { approval_mode: "approve" },
             read_library_item: { approval_mode: "approve" },
@@ -1431,14 +1423,12 @@ export class CodexAppServer {
       },
     };
     await this.startAgentThread({
-      internetEnabled: true,
       waitForMcp: true,
       nativeThreadId: this.session.nativeThreadId,
     });
   }
 
   private async startAgentThread(options: {
-    internetEnabled: boolean;
     model?: string;
     effort?: string | null;
     waitForMcp?: boolean;
@@ -1450,8 +1440,7 @@ export class CodexAppServer {
     const threadInput = {
       ...(options.model ? { model: options.model } : {}),
       cwd: this.folderPath,
-      permissions: ":workspace",
-      runtimeWorkspaceRoots: [this.folderPath],
+      sandbox: "danger-full-access",
       approvalPolicy: "never",
       developerInstructions: getDeveloperInstructions(
         this.session.surfaceKind,
@@ -1461,21 +1450,6 @@ export class CodexAppServer {
       personality: "pragmatic",
       config: {
         ...this.threadBaseConfig,
-        features: {
-          network_proxy: options.internetEnabled
-            ? false
-            : {
-                enabled: true,
-                mode: "full",
-                domains: {
-                  localhost: "allow",
-                  "127.0.0.1": "allow",
-                  "::1": "allow",
-                },
-                allow_local_binding: true,
-              },
-        },
-        web_search: options.internetEnabled ? "live" : "disabled",
         ...(options.effort ? { model_reasoning_effort: options.effort } : {}),
       },
     };
@@ -1509,26 +1483,9 @@ export class CodexAppServer {
       serviceTier:
         typeof thread.serviceTier === "string" ? thread.serviceTier : null,
     };
-    const activeProfile = isRecord(thread.activePermissionProfile)
-      ? thread.activePermissionProfile.id
-      : null;
-    if (activeProfile !== ":workspace") {
+    if (thread.approvalPolicy !== "never") {
       throw new Error(
-        "Codex did not activate the selected-folder permission profile."
-      );
-    }
-    const runtimeRoots = Array.isArray(thread.runtimeWorkspaceRoots)
-      ? thread.runtimeWorkspaceRoots
-      : [];
-    const sandbox = isRecord(thread.sandbox) ? thread.sandbox : {};
-    if (
-      runtimeRoots.length !== 1 ||
-      runtimeRoots[0] !== this.folderPath ||
-      thread.approvalPolicy !== "never" ||
-      sandbox.networkAccess !== false
-    ) {
-      throw new Error(
-        "Codex did not preserve Drawsy's folder/network boundary."
+        "Codex did not apply Drawsy's no-approval session policy."
       );
     }
     if (options.waitForMcp) {
@@ -1608,7 +1565,7 @@ export class CodexAppServer {
         )
       : tags.plugins;
     const nativeChromeRequested =
-      !fastMode && (pointerDrawMode || NATIVE_CHROME_INTENT.test(message));
+      !fastMode && NATIVE_CHROME_INTENT.test(message);
     const preferredNativeChromePlugin = nativeChromeRequested
       ? controls.plugins.find(
           (plugin) => plugin.id === this.nativeChromePluginId
@@ -1637,11 +1594,6 @@ export class CodexAppServer {
           );
         })
       : [];
-    if (pointerDrawMode && !this.nativeChromeAvailable) {
-      throw new Error(
-        `DRAWSY_BROWSER_UNAVAILABLE: ${nativeBrowserRecoveryMessage()}`
-      );
-    }
     const bundledTurnSkillNames = fastMode
       ? FAST_MODE_BUNDLED_SKILL_NAMES
       : pointerDrawMode
@@ -1670,8 +1622,7 @@ export class CodexAppServer {
       const result = (await this.request("turn/start", {
         threadId: this.threadId,
         cwd: this.folderPath,
-        sandboxPolicy: this.sandboxPolicy(),
-        runtimeWorkspaceRoots: [this.folderPath],
+        sandboxPolicy: { type: "dangerFullAccess" },
         approvalPolicy: "never",
         input: [
           ...turnSkills.map((skill) => ({ type: "skill", ...skill })),
@@ -1742,7 +1693,7 @@ export class CodexAppServer {
             ? [{ type: "text", text: DRAW_GENERATION_INSTRUCTION, text_elements: [] }]
             : []),
           ...(pointerDrawMode
-            ? [{ type: "text", text: DRAW_MODE_INSTRUCTION, text_elements: [] }]
+            ? [{ type: "text", text: NATIVE_CANVAS_CONTROL_INSTRUCTION, text_elements: [] }]
             : []),
           ...(fastMode
             ? [{ type: "text", text: FAST_MODE_INSTRUCTION, text_elements: [] }]
@@ -2053,8 +2004,6 @@ export class CodexAppServer {
       ...this.bundledSkills,
     ];
     const controls = {
-      accessMode: this.accessMode,
-      internetEnabled: this.internetEnabled,
       models,
       skills: availableSkills,
       plugins,
@@ -2072,9 +2021,10 @@ export class CodexAppServer {
     if (this.turnActive) {
       throw new Error("Wait for the current Codex turn to finish.");
     }
+    if (settings.accessMode !== undefined || settings.internetEnabled !== undefined) {
+      throw new Error("Local Codex uses native full-access settings.");
+    }
     const controls = await this.getControls();
-    const nextAccessMode = settings.accessMode ?? this.accessMode;
-    const nextInternet = settings.internetEnabled ?? this.internetEnabled;
     const selectedModel = settings.model
       ? controls.models.find((model) => model.model === settings.model)
       : undefined;
@@ -2094,76 +2044,17 @@ export class CodexAppServer {
       throw new Error("That reasoning level is not available for this model.");
     }
 
-    const internetChanged = nextInternet !== this.internetEnabled;
-    const previousThreadId = this.threadId;
-    const previousMetadata = { ...this.agentMetadata };
-    const previousControls = this.lastControls;
-    if (internetChanged) {
-      const threadOptions = {
-        internetEnabled: nextInternet,
-        model: selectedModel?.model || this.agentMetadata.model,
-        effort: settings.effort || this.agentMetadata.reasoningEffort,
-      };
-      try {
-        await this.startAgentThread({
-          ...threadOptions,
-          nativeThreadId: previousThreadId,
-        });
-      } catch (error) {
-        if (
-          !isCodexThreadMissingError(error) ||
-          this.session.nativeThreadId ||
-          this.hasSubmittedTurn
-        ) {
-          throw error;
-        }
-        // Codex does not persist a new thread until its first user turn.
-        // Reconfigure this empty thread without trying to resume its rollout.
-        await this.startAgentThread(threadOptions);
-      }
-    }
-    try {
-      await this.request("thread/settings/update", {
-        threadId: this.threadId,
-        cwd: this.folderPath,
-        approvalPolicy: "never",
-        sandboxPolicy: this.sandboxPolicy(nextAccessMode, nextInternet),
-        ...(selectedModel ? { model: selectedModel.model } : {}),
-        ...(settings.effort ? { effort: settings.effort } : {}),
-      });
-    } catch (error) {
-      if (internetChanged) {
-        this.threadId = previousThreadId;
-        this.agentMetadata = previousMetadata;
-        this.lastControls = previousControls;
-      }
-      throw error;
-    }
-    this.accessMode = nextAccessMode;
-    this.internetEnabled = nextInternet;
+    await this.request("thread/settings/update", {
+      threadId: this.threadId,
+      cwd: this.folderPath,
+      approvalPolicy: "never",
+      sandboxPolicy: { type: "dangerFullAccess" },
+      ...(selectedModel ? { model: selectedModel.model } : {}),
+      ...(settings.effort ? { effort: settings.effort } : {})
+    });
     if (selectedModel) this.agentMetadata.model = selectedModel.model;
     if (settings.effort) this.agentMetadata.reasoningEffort = settings.effort;
-    if (internetChanged && previousThreadId !== this.threadId) {
-      await this.request("thread/unsubscribe", {
-        threadId: previousThreadId,
-      }).catch(() => undefined);
-    }
     return { agent: this.metadata, controls: await this.getControls() };
-  }
-
-  private sandboxPolicy(
-    accessMode = this.accessMode,
-    internetEnabled = this.internetEnabled
-  ): JsonObject {
-    return accessMode === "readOnly"
-      ? { type: "readOnly", networkAccess: internetEnabled }
-      : {
-          type: "workspaceWrite",
-          writableRoots: [this.folderPath],
-          networkAccess: internetEnabled,
-          excludeTmpdirEnvVar: true,
-          excludeSlashTmp: true,
-        };
   }
 
   close() {
@@ -2172,9 +2063,13 @@ export class CodexAppServer {
     const closedError = new Error("The local Codex runtime closed.");
     this.rejectDrawsyMcp(closedError);
     this.rejectPendingRequests(closedError);
+    if (process.platform === "win32") {
+      forceStopNativeCli(this.process);
+      return;
+    }
     const pid = this.process.pid;
     const processGroup =
-      this.session.isolateProcessGroup && process.platform !== "win32" && pid
+      this.session.isolateProcessGroup && pid
         ? -pid
         : null;
     try {
