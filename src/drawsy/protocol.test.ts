@@ -10,7 +10,6 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import net from "node:net";
 import test from "node:test";
 
@@ -28,11 +27,13 @@ import {
   parseCanvasContextReference,
   parseCanvasContextRequest,
   parseCanvasConnectorRequest,
+  parseCanvasControlRequest,
   parseCanvasDiagramCodeRequest,
   parseCanvasLabelRequest,
   parseCanvasOperations,
   parseGenerationMode,
   MAX_DIAGRAM_SOURCE_BYTES,
+  MAX_AGENT_GRANT_TTL_MS,
   parseDrawsyTabUrl,
   parseLivePreviewRequest,
   surfaceSupportsLivePreview,
@@ -142,6 +143,13 @@ test("canvas connector and label requests validate native operations", () => {
   assert.throws(() => parseCanvasLabelRequest({ containerId: "shape", text: "Label", style: { fontSize: 257 } }), /invalid/);
 });
 
+test("native canvas control requests validate bounded actions", () => {
+  assert.deepEqual(parseCanvasControlRequest({ action: "click", x: 20, y: 30 }), { action: "click", x: 20, y: 30 });
+  assert.deepEqual(parseCanvasControlRequest({ action: "set_tool", tool: "freedraw" }), { action: "set_tool", tool: "freedraw" });
+  assert.throws(() => parseCanvasControlRequest({ action: "click", x: Infinity, y: 0 }), /invalid/);
+  assert.throws(() => parseCanvasControlRequest({ action: "set_tool", tool: "magic" }), /invalid/);
+});
+
 test("Fast Mode and diagram-code request parsing enforce the wire contract", () => {
   assert.equal(parseGenerationMode(undefined), "draw");
   assert.equal(parseGenerationMode("fast"), "fast");
@@ -155,6 +163,25 @@ test("Fast Mode and diagram-code request parsing enforce the wire contract", () 
     replaceOperationId: "prior-op"
   };
   assert.deepEqual(parseCanvasDiagramCodeRequest(request), request);
+  assert.deepEqual(
+    parseCanvasDiagramCodeRequest({ ...request, presentationFrame: { mode: "existing", frameId: "slide-1" } }),
+    { ...request, presentationFrame: { mode: "existing", frameId: "slide-1" } }
+  );
+  assert.deepEqual(
+    parseCanvasDiagramCodeRequest({
+      ...request,
+      presentationFrame: { mode: "new", width: 1200, height: 700, name: "Slide 2" }
+    }).presentationFrame,
+    { mode: "new", width: 1200, height: 700, name: "Slide 2" }
+  );
+  assert.throws(
+    () => parseCanvasDiagramCodeRequest({ ...request, presentationFrame: { mode: "existing", frameId: "bad id" } }),
+    /Diagram code request/
+  );
+  assert.throws(
+    () => parseCanvasDiagramCodeRequest({ ...request, presentationFrame: { mode: "new", width: 20, height: 700 } }),
+    /Diagram code request/
+  );
   assert.deepEqual(
     parseCanvasDiagramCodeRequest({
       format: "mermaid",
@@ -413,6 +440,22 @@ test("Drawsy resource turns require exact, unexpired grants", () => {
   );
 });
 
+test("connector and resource grants accept up to the shared 30 minute lifetime", () => {
+  const makeConnectorTurn = (expiresAt: number) => ({
+    turnId: "turn-one",
+    sources: [{ connectionId: "google-one", capability: "mail", label: "gmail", accountLabel: "person@example.com" }],
+    grants: [{ connectionId: "google-one", grant: "opaque.signed-grant", expiresAt }]
+  });
+  const makeResourceTurn = (expiresAt: number) => ({
+    turnId: "turn-one", resources: ["kanban"], grant: "opaque.signed-resource-grant", expiresAt
+  });
+
+  assert.doesNotThrow(() => parseAgentConnectorTurn(makeConnectorTurn(Date.now() + 20 * 60 * 1000)));
+  assert.doesNotThrow(() => parseAgentResourceTurn(makeResourceTurn(Date.now() + 20 * 60 * 1000)));
+  assert.throws(() => parseAgentConnectorTurn(makeConnectorTurn(Date.now() + MAX_AGENT_GRANT_TTL_MS + 60_000)), /expired/);
+  assert.throws(() => parseAgentResourceTurn(makeResourceTurn(Date.now() + MAX_AGENT_GRANT_TTL_MS + 60_000)), /invalid or expired/);
+});
+
 test("canvas operations reject malformed and ambiguous input", () => {
   assert.deepEqual(parseCanvasOperations({}), {
     upsertElements: [],
@@ -559,7 +602,7 @@ test("live previews stay on loopback and use bounded geometry", () => {
   );
 });
 
-test("bridge keeps Codex controls inside the selected-folder boundary", async (t) => {
+test("bridge keeps native Codex local settings unrestricted and folders optional", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "drawsy bridge test "));
   const selectedFolder = path.join(root, "workspace");
   const requestLog = path.join(root, "requests.ndjson");
@@ -836,6 +879,9 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         accessMode: null,
         internetEnabled: null,
       },
+      pi: { model: null, modelProvider: null, effort: null, accessMode: null, internetEnabled: null },
+      omp: { model: null, modelProvider: null, effort: null, accessMode: null, internetEnabled: null },
+      deepseek: { model: null, modelProvider: null, effort: null, accessMode: null, internetEnabled: null },
       updatedAt: 0,
     });
 
@@ -951,11 +997,20 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         }),
       }
     );
-    assert.equal(neutralWithoutFolderResponse.status, 400);
-    assert.equal(
-      (await neutralWithoutFolderResponse.json()).error.code,
-      "folder_required"
+    assert.equal(neutralWithoutFolderResponse.status, 201);
+    const neutralWithoutFolder = (await neutralWithoutFolderResponse.json()) as {
+      id: string;
+      token: string;
+      folderName: string | null;
+      folder: { selectionId: string; name: string } | null;
+    };
+    assert.equal(neutralWithoutFolder.folderName, null);
+    assert.equal(neutralWithoutFolder.folder, null);
+    const closeNeutral = await fetch(
+      `${bridge.address}/v1/sessions/${neutralWithoutFolder.id}`,
+      { method: "DELETE", headers: { origin, authorization: `Bearer ${neutralWithoutFolder.token}` } }
     );
+    assert.equal(closeNeutral.status, 204);
 
     const rememberedFolderResponse = await fetch(
       `${bridge.address}/v1/sessions`,
@@ -1061,8 +1116,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     );
     assert.equal(controlsResponse.status, 200);
     const controls = (await controlsResponse.json()) as {
-      accessMode: string;
-      internetEnabled: boolean;
+      accessMode?: string;
+      internetEnabled?: boolean;
       models: Array<{ model: string }>;
       skills: Array<{ name: string; path: string }>;
       plugins: Array<{
@@ -1078,8 +1133,21 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       controls.models.map((model) => model.model),
       ["gpt-test", "gpt-next"]
     );
-    assert.equal(controls.accessMode, "workspace");
-    assert.equal(controls.internetEnabled, true);
+    assert.equal(controls.accessMode, undefined);
+    assert.equal(controls.internetEnabled, undefined);
+    const unsupportedNativeControls = await fetch(
+      `${bridge.address}/v1/sessions/${session.id}/settings`,
+      {
+        method: "POST",
+        headers: { ...headers, authorization: `Bearer ${session.token}` },
+        body: JSON.stringify({ accessMode: "readOnly", internetEnabled: false })
+      }
+    );
+    assert.equal(unsupportedNativeControls.status, 500);
+    assert.match(
+      (await unsupportedNativeControls.json()).error.message,
+      /native full-access settings/i
+    );
     assert.deepEqual(controls.skills[0], {
       name: "documents",
       displayName: "Documents",
@@ -1139,20 +1207,6 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       { name: "drawsy", toolCount: 20, authStatus: "unsupported" },
     ]);
 
-    const missingDrawTargetResponse = await fetch(
-      `${bridge.address}/v1/sessions/${session.id}/turns`,
-      {
-        method: "POST",
-        headers: { ...headers, authorization: `Bearer ${session.token}` },
-        body: JSON.stringify({ message: "draw this", drawMode: true }),
-      }
-    );
-    assert.equal(missingDrawTargetResponse.status, 400);
-    assert.equal(
-      (await missingDrawTargetResponse.json()).error.code,
-      "draw_target_missing"
-    );
-
     const countThreadStarts = async () =>
       (await readFile(requestLog, "utf8"))
         .trim()
@@ -1160,26 +1214,6 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         .map((line) => JSON.parse(line))
         .filter((message) => message.method === "thread/start").length;
     const startsBeforeSettings = await countThreadStarts();
-    const resumeErrorFile = requestLog + ".resume-error";
-    await writeFile(
-      resumeErrorFile,
-      JSON.stringify({ code: -32603, message: "Resume backend unavailable." })
-    );
-    const failedSettings = await fetch(
-      `${bridge.address}/v1/sessions/${session.id}/settings`,
-      {
-        method: "POST",
-        headers: { ...headers, authorization: `Bearer ${session.token}` },
-        body: JSON.stringify({ internetEnabled: false })
-      }
-    );
-    assert.equal(failedSettings.status, 500);
-    assert.equal(
-      (await failedSettings.json()).error.message,
-      "Resume backend unavailable."
-    );
-    await rm(resumeErrorFile);
-
     const settingsResponse = await fetch(
       `${bridge.address}/v1/sessions/${session.id}/settings`,
       {
@@ -1188,15 +1222,14 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         body: JSON.stringify({
           model: "gpt-next",
           effort: "high",
-          internetEnabled: false,
         }),
       }
     );
     assert.equal(settingsResponse.status, 200);
     assert.equal(
       await countThreadStarts(),
-      startsBeforeSettings + 1,
-      "only a new thread without a rollout may be replaced while applying Internet settings"
+      startsBeforeSettings,
+      "native model settings updates do not replace the local thread"
     );
 
     const contextId = "11111111-1111-4111-8111-111111111111";
@@ -1610,8 +1643,6 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
           message: "hold",
           generationMode: "draw",
           drawMode: true,
-          drawsyTabId: "test-drawsy-tab-identity",
-          drawsyTabUrl: "http://localhost:3001/",
         }),
       }
     );
@@ -1681,24 +1712,16 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       .split("\n")
       .map((line) => JSON.parse(line));
     const thread = log.find((message) => message.method === "thread/start");
-    assert.equal(thread.params.permissions, ":workspace");
-    assert.deepEqual(thread.params.runtimeWorkspaceRoots, [canonicalFolder]);
+    assert.equal(thread.params.permissions, undefined);
+    assert.equal(thread.params.runtimeWorkspaceRoots, undefined);
     assert.equal(thread.params.approvalPolicy, "never");
     assert.equal(thread.params.ephemeral, false);
     assert.equal(thread.params.environments, undefined);
     assert.match(
       thread.params.developerInstructions,
-      /Built-in filesystem, patch, and shell tools are available/
+      /A selected folder is the working directory, not a filesystem boundary/
     );
     assert.match(thread.params.developerInstructions, /DRAW\.md/);
-    assert.match(
-      thread.params.developerInstructions,
-      /Apply canvas work progressively/
-    );
-    assert.match(
-      thread.params.developerInstructions,
-      /never guess from a stale snapshot/
-    );
     assert.match(
       thread.params.developerInstructions,
       /relationship-rich diagram/
@@ -1746,7 +1769,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         .BROWSER_USE_AVAILABLE_BACKENDS,
       "chrome"
     );
-    assert.equal(thread.params.config.web_search, "live");
+    assert.equal(thread.params.config.web_search, undefined);
     assert.equal(
       thread.params.config.mcp_servers.drawsy.tools.apply_canvas_changes
         .approval_mode,
@@ -1788,30 +1811,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       canonicalFolder
     );
     const threads = log.filter((message) => message.method === "thread/start");
-    const resumes = log.filter(
-      (message) =>
-        message.method === "thread/resume" && message.params.model === "gpt-next"
-    );
-    assert.equal(threads.length, startsBeforeSettings + 1);
-    assert.equal(threads[0].params.config.features.network_proxy, false);
-    assert.equal(resumes[0].params.threadId, "thread-1");
-    assert.equal(resumes[0].params.excludeTurns, true);
-    assert.equal(resumes[0].params.initialTurnsPage, undefined);
-    assert.equal(resumes[0].params.config.web_search, "disabled");
-    assert.deepEqual(resumes[0].params.config.features.network_proxy, {
-      enabled: true,
-      mode: "full",
-      domains: {
-        localhost: "allow",
-        "127.0.0.1": "allow",
-        "::1": "allow",
-      },
-      allow_local_binding: true,
-    });
-    assert.equal(resumes[0].params.model, "gpt-next");
-    assert.deepEqual(resumes[0].params.runtimeWorkspaceRoots, [
-      canonicalFolder,
-    ]);
+    assert.equal(threads.length, startsBeforeSettings);
+    assert.equal(threads[0].params.config.features?.network_proxy, undefined);
     const turnPages = log.filter(
       (message) => message.method === "thread/turns/list"
     );
@@ -1821,11 +1822,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     const turn = log.find((message) => message.method === "turn/start");
     assert.equal(turn.params.permissions, undefined);
     assert.deepEqual(turn.params.sandboxPolicy, {
-      type: "workspaceWrite",
-      writableRoots: [canonicalFolder],
-      networkAccess: false,
-      excludeTmpdirEnvVar: true,
-      excludeSlashTmp: true,
+      type: "dangerFullAccess",
     });
     assert.equal(turn.params.environments, undefined);
     assert.equal(turn.params.input[0].type, "skill");
@@ -1909,12 +1906,6 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     assert.ok(
       drawTurn.params.input.some(
         (item: { type?: string; name?: string }) =>
-          item.type === "mention" && item.name === "Chrome"
-      )
-    );
-    assert.ok(
-      drawTurn.params.input.some(
-        (item: { type?: string; name?: string }) =>
           item.type === "skill" && item.name === "drawsy-teaching-diagrams"
       )
     );
@@ -1924,21 +1915,11 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
           item.type === "skill" && item.name === "drawsy-browser-use"
       )
     );
-    assert.ok(
+    assert.equal(
       drawTurn.params.input.some(
-        (item: { text?: string }) =>
-          typeof item.text === "string" &&
-          item.text.includes("test-drawsy-tab-identity") &&
-          item.text.includes("setupBrowserRuntime") &&
-          item.text.includes("agent.browsers.list()") &&
-          item.text.includes("candidateBrowser.user.openTabs()") &&
-          item.text.includes("markerMatchCount") &&
-          item.text.includes("Run the following two") &&
-          item.text.includes("finding zero candidates in one profile") &&
-          item.text.includes(pathToFileURL(chromeBrowserClient).href) &&
-          item.text.includes("document.documentElement.dataset.drawsyTabId") &&
-          item.text.includes("DRAWSY_BROWSER_UNAVAILABLE")
-      )
+        (item: { text?: string }) => item.text?.includes("setupBrowserRuntime")
+      ),
+      false
     );
     const settings = log.find(
       (message) => message.method === "thread/settings/update"
@@ -1946,31 +1927,10 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     assert.equal(settings.params.model, "gpt-next");
     assert.equal(settings.params.effort, "high");
     assert.deepEqual(settings.params.sandboxPolicy, turn.params.sandboxPolicy);
-    await writeFile(
-      resumeErrorFile,
-      JSON.stringify({
-        code: -32600,
-        message: "no rollout found for thread id thread-1"
-      })
-    );
-    const missingHistorySettings = await fetch(
-      `${bridge.address}/v1/sessions/${session.id}/settings`,
-      {
-        method: "POST",
-        headers: { ...headers, authorization: `Bearer ${session.token}` },
-        body: JSON.stringify({ internetEnabled: true })
-      }
-    );
-    assert.equal(missingHistorySettings.status, 500);
-    assert.match(
-      (await missingHistorySettings.json()).error.message,
-      /no rollout found/
-    );
-    await rm(resumeErrorFile);
     assert.equal(
       await countThreadStarts(),
-      startsBeforeSettings + 1,
-      "a thread that has received a user turn must never be replaced with empty history"
+      startsBeforeSettings,
+      "native Codex settings updates keep the same thread"
     );
     const timeResponse = log.find((message) => message.id === "server-time");
     assert.equal(typeof timeResponse.result.currentTimeAt, "number");
@@ -2320,6 +2280,26 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       200,
       "closing one Codex session must not stop the shared bridge"
     );
+
+    const drawWithoutBrowserTarget = await fetch(
+      `${bridge.address}/v1/sessions/${session.id}/turns`,
+      {
+        method: "POST",
+        headers: { ...headers, authorization: `Bearer ${session.token}` },
+        body: JSON.stringify({ message: "draw this", drawMode: true }),
+      }
+    );
+    assert.equal(drawWithoutBrowserTarget.status, 202);
+    const nativeDrawTurn = (await readFile(requestLog, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .filter((message) => message.method === "turn/start")
+      .at(-1);
+    assert.ok(nativeDrawTurn);
+    assert.ok(nativeDrawTurn.params.input.some(
+      (item: { text?: string }) => item.text?.includes("control_canvas")
+    ));
 
     await reader.cancel();
     const closeResponse = await fetch(

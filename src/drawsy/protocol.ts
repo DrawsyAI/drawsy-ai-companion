@@ -1,6 +1,7 @@
 export const MAX_BODY_BYTES = 12 * 1024 * 1024;
 export const MAX_CANVAS_ASSET_BYTES = 8 * 1024 * 1024;
 export const MAX_DIAGRAM_SOURCE_BYTES = 256 * 1024;
+export const MAX_AGENT_GRANT_TTL_MS = 30 * 60 * 1000;
 export const CANVAS_REQUEST_TIMEOUT_MS = 60_000;
 
 export type JsonObject = Record<string, unknown>;
@@ -35,8 +36,11 @@ export type CanvasSnapshot = {
     renderedColors?: JsonObject;
   };
   selection?: { elementIds: string[] };
+  activeTool?: string;
+  currentStyle?: JsonObject;
   styleSummary?: Array<{ strokeColor: string; backgroundColor: string; count: number }>;
   relationships?: Array<{ arrowId: string; sourceId: string | null; targetId: string | null }>;
+  viewport?: { x: number; y: number; width: number; height: number };
   appState?: JsonObject;
   files?: JsonObject;
 };
@@ -60,6 +64,26 @@ export type CanvasLayoutIssue = {
     | "low_contrast";
   elementIds: string[];
   message: string;
+};
+
+export type CanvasControlTool =
+  | "selection" | "lasso" | "rectangle" | "ellipse" | "diamond" | "line" | "arrow"
+  | "freedraw" | "text" | "eraser" | "hand" | "frame" | "magicframe" | "embeddable"
+  | "laser" | "bucketfill";
+export type CanvasControlRequest =
+  | { action: "click"; x: number; y: number }
+  | { action: "select"; elementIds: string[] }
+  | { action: "clear_selection" }
+  | { action: "set_tool"; tool: CanvasControlTool }
+  | { action: "drag"; tool?: CanvasControlTool; start: [number, number]; end: [number, number] }
+  | { action: "draw_freehand"; points: [number, number][] }
+  | { action: "gesture"; points: [number, number][]; tool?: CanvasControlTool }
+  | { action: "type_text"; x: number; y: number; text: string }
+  | { action: "set_style"; target?: "current" | "selection"; elementIds?: string[]; style: CanvasControlStyle };
+export type CanvasControlStyle = {
+  strokeColor?: string; backgroundColor?: string; fillStyle?: "hachure" | "cross-hatch" | "solid" | "zigzag" | "dots";
+  dimensionality?: "2d" | "3d"; strokeWidth?: number; strokeStyle?: "solid" | "dashed" | "dotted";
+  roughness?: number; opacity?: number; fontFamily?: number; fontSize?: number; textAlign?: "left" | "center" | "right";
 };
 
 export type CanvasConnectorRequest = {
@@ -87,6 +111,9 @@ export type CanvasDiagramCodeRequest = {
   source: string;
   operationId: string;
   replaceOperationId?: string;
+  presentationFrame?:
+    | { mode: "existing"; frameId: string }
+    | { mode: "new"; width: number; height: number; name?: string };
 };
 
 export type CanvasLibraryRequest =
@@ -272,7 +299,7 @@ export type AgentMetadata = {
 
 export type AgentAccessMode = "workspace" | "readOnly";
 
-export type AgentEngine = "codex" | "opencode";
+export type AgentEngine = "codex" | "opencode" | "pi" | "omp" | "deepseek";
 
 export type AgentModelOption = {
   id: string;
@@ -326,13 +353,13 @@ export type AgentRecoveryDiagnostic = {
 
 export type AgentMcpOption = {
   name: string;
-  toolCount: number;
+  toolCount?: number;
   authStatus: string;
 };
 
 export type AgentControls = {
-  accessMode: AgentAccessMode;
-  internetEnabled: boolean;
+  accessMode?: AgentAccessMode;
+  internetEnabled?: boolean;
   internetControl?: { canDisable: boolean; reason?: string };
   models: AgentModelOption[];
   skills: AgentSkillOption[];
@@ -442,7 +469,8 @@ export type BridgeEvent =
           | "capture"
           | "replaceImage"
           | "preview"
-          | "library";
+          | "library"
+          | "control";
         canvasId: string;
         operations?: CanvasOperations;
         connectorRequest?: CanvasConnectorRequest;
@@ -452,6 +480,7 @@ export type BridgeEvent =
         imageReplacement?: CanvasImageReplacement;
         previewRequest?: LivePreviewRequest;
         libraryRequest?: CanvasLibraryRequest;
+        controlRequest?: CanvasControlRequest;
       };
     }
   | {
@@ -712,7 +741,7 @@ export const parseAgentConnectorTurn = (
       typeof grant.expiresAt !== "number" ||
       !Number.isInteger(grant.expiresAt) ||
       grant.expiresAt <= Date.now() ||
-      grant.expiresAt > Date.now() + 15 * 60 * 1000
+      grant.expiresAt > Date.now() + MAX_AGENT_GRANT_TTL_MS
     ) {
       throw new Error("A connector grant is invalid or expired.");
     }
@@ -761,7 +790,7 @@ export const parseAgentResourceTurn = (
     typeof value.expiresAt !== "number" ||
     !Number.isInteger(value.expiresAt) ||
     value.expiresAt <= Date.now() ||
-    value.expiresAt > Date.now() + 15 * 60 * 1000
+    value.expiresAt > Date.now() + MAX_AGENT_GRANT_TTL_MS
   ) {
     throw new Error("A Drawsy resource grant is invalid or expired.");
   }
@@ -988,13 +1017,28 @@ export const parseCanvasLabelRequest = (value: unknown): CanvasLabelRequest => {
 export const parseCanvasDiagramCodeRequest = (
   value: unknown
 ): CanvasDiagramCodeRequest => {
+  const frame = isRecord(value) ? value.presentationFrame : undefined;
+  const validFrame =
+    frame === undefined ||
+    (isRecord(frame) &&
+      (frame.mode === "existing"
+        ? Object.keys(frame).every((key) => ["mode", "frameId"].includes(key)) &&
+          typeof frame.frameId === "string" &&
+          /^[A-Za-z0-9_-]{1,128}$/.test(frame.frameId)
+        : frame.mode === "new"
+        ? Object.keys(frame).every((key) => ["mode", "width", "height", "name"].includes(key)) &&
+          finiteWithin(frame.width, 100, 100_000) &&
+          finiteWithin(frame.height, 100, 100_000) &&
+          (frame.name === undefined ||
+            (typeof frame.name === "string" &&
+              frame.name.trim().length > 0 &&
+              frame.name.trim().length <= 100))
+        : false));
   if (
     !isRecord(value) ||
     Object.keys(value).some(
       (key) =>
-        !["format", "source", "operationId", "replaceOperationId"].includes(
-          key
-        )
+        !["format", "source", "operationId", "replaceOperationId", "presentationFrame"].includes(key)
     ) ||
     value.format !== "mermaid" ||
     typeof value.source !== "string" ||
@@ -1005,7 +1049,8 @@ export const parseCanvasDiagramCodeRequest = (
     (value.replaceOperationId !== undefined &&
       (typeof value.replaceOperationId !== "string" ||
         !/^[A-Za-z0-9_-]{1,128}$/.test(value.replaceOperationId) ||
-        value.replaceOperationId === value.operationId))
+        value.replaceOperationId === value.operationId)) ||
+    !validFrame
   ) {
     throw new Error("Diagram code request is invalid or exceeds 256 KiB.");
   }
@@ -1015,6 +1060,18 @@ export const parseCanvasDiagramCodeRequest = (
     operationId: value.operationId,
     ...(typeof value.replaceOperationId === "string"
       ? { replaceOperationId: value.replaceOperationId }
+      : {}),
+    ...(isRecord(frame) && frame.mode === "existing"
+      ? { presentationFrame: { mode: "existing" as const, frameId: frame.frameId as string } }
+      : isRecord(frame) && frame.mode === "new"
+      ? {
+          presentationFrame: {
+            mode: "new" as const,
+            width: frame.width as number,
+            height: frame.height as number,
+            ...(typeof frame.name === "string" ? { name: frame.name.trim() } : {})
+          }
+        }
       : {})
   };
 };
@@ -1111,4 +1168,209 @@ export const parseCanvasOperations = (value: unknown): CanvasOperations => {
     throw new Error("files must contain unique ids.");
   }
   return { upsertElements, deleteElementIds, files: parsedFiles };
+};
+
+export const parseCanvasControlRequest = (
+  value: unknown
+): CanvasControlRequest => {
+  if (!isRecord(value) || typeof value.action !== "string") {
+    throw new Error("Canvas control request must be an action object.");
+  }
+  const hasOnlyKeys = (...keys: string[]) =>
+    Object.keys(value).every((key) => keys.includes(key));
+  const isScenePoint = (point: unknown): point is [number, number] =>
+    Array.isArray(point) &&
+    point.length === 2 &&
+    finiteWithin(point[0], -1_000_000, 1_000_000) &&
+    finiteWithin(point[1], -1_000_000, 1_000_000);
+  const isControlTool = (tool: unknown): tool is CanvasControlTool =>
+    typeof tool === "string" &&
+    [
+      "selection",
+      "lasso",
+      "rectangle",
+      "ellipse",
+      "diamond",
+      "line",
+      "arrow",
+      "freedraw",
+      "text",
+      "eraser",
+      "hand",
+      "frame",
+      "magicframe",
+      "embeddable",
+      "laser",
+      "bucketfill"
+    ].includes(tool);
+  const isElementIdList = (ids: unknown) =>
+    Array.isArray(ids) &&
+    ids.length > 0 &&
+    ids.length <= 100 &&
+    ids.every(
+      (id) => typeof id === "string" && id.trim().length > 0 && id.length <= 128
+    ) &&
+    new Set(ids).size === ids.length;
+  const isCanvasColor = (color: unknown) =>
+    typeof color === "string" &&
+    (color === "transparent" ||
+      /^#(?:[\da-fA-F]{3,4}|[\da-fA-F]{6}|[\da-fA-F]{8})$/.test(color));
+  if (
+    value.action === "click" &&
+    hasOnlyKeys("action", "x", "y") &&
+    finiteWithin(value.x, -1_000_000, 1_000_000) &&
+    finiteWithin(value.y, -1_000_000, 1_000_000)
+  ) {
+    return { action: "click", x: value.x as number, y: value.y as number };
+  }
+  if (
+    value.action === "select" &&
+    hasOnlyKeys("action", "elementIds") &&
+    isElementIdList(value.elementIds)
+  ) {
+    return { action: "select", elementIds: value.elementIds as string[] };
+  }
+  if (value.action === "clear_selection" && hasOnlyKeys("action")) {
+    return { action: "clear_selection" };
+  }
+  if (
+    value.action === "set_tool" &&
+    hasOnlyKeys("action", "tool") &&
+    isControlTool(value.tool)
+  ) {
+    return { action: "set_tool", tool: value.tool as CanvasControlTool };
+  }
+  if (
+    value.action === "drag" &&
+    hasOnlyKeys("action", "tool", "start", "end") &&
+    (value.tool === undefined || isControlTool(value.tool)) &&
+    isScenePoint(value.start) &&
+    isScenePoint(value.end) &&
+    Math.max(
+      Math.abs(value.start[0] - value.end[0]),
+      Math.abs(value.start[1] - value.end[1])
+    ) <= 1_000_000 &&
+    (value.start[0] !== value.end[0] || value.start[1] !== value.end[1]) &&
+    (!(value.tool === "rectangle" || value.tool === "ellipse" || value.tool === "diamond" || value.tool === "frame" || value.tool === "magicframe" || value.tool === "embeddable") ||
+      (value.start[0] !== value.end[0] && value.start[1] !== value.end[1]))
+  ) {
+    return value.tool === undefined
+      ? { action: "drag", start: value.start, end: value.end }
+      : {
+          action: "drag",
+          tool: value.tool,
+          start: value.start,
+          end: value.end
+        };
+  }
+  if (
+    value.action === "draw_freehand" &&
+    hasOnlyKeys("action", "points") &&
+    Array.isArray(value.points) &&
+    value.points.length >= 2 &&
+    value.points.length <= 512 &&
+    value.points.every(
+      (point) =>
+        Array.isArray(point) &&
+        point.length === 2 &&
+        finiteWithin(point[0], -1_000_000, 1_000_000) &&
+        finiteWithin(point[1], -1_000_000, 1_000_000)
+    ) &&
+    Math.max(...value.points.map((point) => point[0] as number)) -
+      Math.min(...value.points.map((point) => point[0] as number)) <=
+      1_000_000 &&
+    Math.max(...value.points.map((point) => point[1] as number)) -
+      Math.min(...value.points.map((point) => point[1] as number)) <=
+      1_000_000
+  ) {
+    return {
+      action: "draw_freehand",
+      points: value.points as [number, number][]
+    };
+  }
+  if (
+    value.action === "gesture" &&
+    hasOnlyKeys("action", "points", "tool") &&
+    (value.tool === undefined || isControlTool(value.tool)) &&
+    Array.isArray(value.points) &&
+    value.points.length >= 2 &&
+    value.points.length <= 512 &&
+    value.points.every(isScenePoint) &&
+    Math.max(...value.points.map((point) => point[0])) -
+      Math.min(...value.points.map((point) => point[0])) <= 1_000_000 &&
+    Math.max(...value.points.map((point) => point[1])) -
+      Math.min(...value.points.map((point) => point[1])) <= 1_000_000
+  ) {
+    return value.tool === undefined
+      ? { action: "gesture", points: value.points }
+      : { action: "gesture", points: value.points, tool: value.tool };
+  }
+  if (
+    value.action === "type_text" &&
+    hasOnlyKeys("action", "x", "y", "text") &&
+    finiteWithin(value.x, -1_000_000, 1_000_000) &&
+    finiteWithin(value.y, -1_000_000, 1_000_000) &&
+    typeof value.text === "string" &&
+    value.text.trim().length > 0 &&
+    value.text.length <= 4_000
+  ) {
+    return {
+      action: "type_text",
+      x: value.x as number,
+      y: value.y as number,
+      text: value.text
+    };
+  }
+  if (
+    value.action === "set_style" &&
+    hasOnlyKeys("action", "target", "elementIds", "style") &&
+    (value.target === undefined ||
+      value.target === "current" ||
+      value.target === "selection") &&
+    !(value.target === "current" && value.elementIds !== undefined) &&
+    (value.elementIds === undefined || isElementIdList(value.elementIds)) &&
+    isRecord(value.style) &&
+    Object.keys(value.style).length > 0 &&
+    Object.keys(value.style).every((key) =>
+      [
+        "strokeColor",
+        "backgroundColor",
+        "fillStyle",
+        "dimensionality",
+        "strokeWidth",
+        "strokeStyle",
+        "roughness",
+        "opacity",
+        "fontFamily",
+        "fontSize",
+        "textAlign"
+      ].includes(key)
+    ) &&
+    (value.style.strokeColor === undefined || isCanvasColor(value.style.strokeColor)) &&
+    (value.style.backgroundColor === undefined || isCanvasColor(value.style.backgroundColor)) &&
+    (value.style.fillStyle === undefined ||
+      ["hachure", "cross-hatch", "solid", "zigzag", "dots"].includes(value.style.fillStyle as string)) &&
+    (value.style.dimensionality === undefined ||
+      value.style.dimensionality === "2d" ||
+      value.style.dimensionality === "3d") &&
+    (value.style.strokeWidth === undefined || finiteWithin(value.style.strokeWidth, 1, 24)) &&
+    (value.style.strokeStyle === undefined ||
+      ["solid", "dashed", "dotted"].includes(value.style.strokeStyle as string)) &&
+    (value.style.roughness === undefined || finiteWithin(value.style.roughness, 0, 3)) &&
+    (value.style.opacity === undefined || finiteWithin(value.style.opacity, 0, 100)) &&
+    (value.style.fontFamily === undefined ||
+      [1, 2, 3, 5, 6, 7, 8, 9, 10].includes(value.style.fontFamily as number)) &&
+    (value.style.fontSize === undefined || finiteWithin(value.style.fontSize, 1, 512)) &&
+    (value.style.textAlign === undefined ||
+      ["left", "center", "right"].includes(value.style.textAlign as string))
+  ) {
+    const parsed: Extract<CanvasControlRequest, { action: "set_style" }> = {
+      action: "set_style" as const,
+      style: value.style as CanvasControlStyle
+    };
+    if (value.target !== undefined) parsed.target = value.target as "current" | "selection";
+    if (value.elementIds !== undefined) parsed.elementIds = value.elementIds as string[];
+    return parsed;
+  }
+  throw new Error("Canvas control request is invalid.");
 };
