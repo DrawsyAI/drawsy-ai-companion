@@ -6,7 +6,9 @@ import test from "node:test";
 import { deepSeekDesktopLaunchers, resolveDeepSeekBinary } from "./deepseek-binary.js";
 
 test("DeepSeek desktop discovery includes native macOS launchers without replacing PATH", () => {
-  assert.deepEqual(deepSeekDesktopLaunchers("darwin", "/Users/example"), [
+  const macOSLaunchers = deepSeekDesktopLaunchers("darwin", "/Users/example")
+    .map((candidate) => candidate.split(path.sep).join("/"));
+  assert.deepEqual(macOSLaunchers, [
     "/Users/example/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh",
     "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"
   ]);
