@@ -77,13 +77,13 @@ Use `capture_canvas_context` for visual scale or annotations and a fresh screens
 
 ## Draw Mode routing
 
-The Companion's Draw Mode instruction is deliberately an intent router:
+Draw mode routes canvas changes through the first-party `control_canvas` tool for the one attached canvas:
 
-- Explicit freehand, pencil, sketch, hand-drawn, or human-like drawing goes through native current-tab Browser/Chrome pointer input.
-- Shape, diagram, layout, connector, label, or other structured canvas changes go through Drawsy MCP.
-- Mixed requests use both routes for their corresponding portions.
-- If native Browser/Chrome is not available, report that freehand current-tab input is unavailable; never disguise structured objects as freehand.
-- For a pure freehand request, make one compact native inspection pass, act, and verify the rendered canvas rather than repeatedly rediscovering it.
+- Read the live scene first and use its viewport coordinates, current style, selected element IDs, and visible palette.
+- `set_tool` selects a canvas tool. `click` sends a canvas click. `drag` sends a straight pointer path; `gesture` sends a curved path; `draw_freehand` selects Pencil and draws a continuous stroke. Omit the gesture's `tool` to use the current tool.
+- A pointer path is delivered to Drawsy's existing canvas input handlers. Selection drag can move or resize; Hand drag pans; Eraser drag erases; Bucket fill click fills an enclosed region; shape tools create editable shapes; Text uses the native text editor.
+- `set_style` changes either current drawing defaults or selected elements. Supported settings are stroke and background colors, fill style, dimension, line weight, line pattern, roughness, opacity, font, font size, and text alignment.
+- The controller is scoped to the attached canvas and does not use Chrome or OS input. Its pointer events are generated inside Drawsy and handled by the same canvas input code; they are not hardware/CDP events. Image insertion requires a separate asset action and is not supported by pointer control. If `nativeCanvasControl` is not advertised, Draw mode must remain unavailable.
 
 ## Maintenance rule
 
