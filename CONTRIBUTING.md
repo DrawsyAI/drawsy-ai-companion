@@ -1,13 +1,13 @@
 # Contributing
 
-Drawsy Companion is the public local desktop boundary for Drawsy. Changes in this repository should improve the tray application, local bridge, Codex/OpenCode lifecycle, local MCP, or cross-platform packaging without pulling hosted backend responsibilities into the companion.
+Drawsy Companion is the public local desktop boundary for Drawsy. Changes in this repository should improve the tray application, local bridge, supported harness lifecycles, local MCP, or cross-platform packaging without pulling hosted backend responsibilities into the companion.
 
 ## Change boundary
 
 - Keep the bridge bound to loopback and preserve origin/session authentication.
-- Keep every agent session scoped to its selected folder and current Drawsy surface.
+- Use the selected folder as the session working directory and keep the Drawsy surface scoped to the active session. Preserve each harness's native profile, permission model, and tool access; do not add a Companion-level filesystem jail.
 - Do not add provider credentials, backend implementation, hosted workspace code, or deployment secrets.
-- Do not install or bundle Codex/OpenCode; the companion detects the user's existing installation.
+- Do not install or bundle a harness; Companion detects the user's existing installation.
 - Keep local-only behavior local unless an explicit, reviewed integration contract requires otherwise.
 - Prefer focused changes over broad renames or unrelated cleanup.
 

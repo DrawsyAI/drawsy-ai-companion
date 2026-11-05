@@ -1,5 +1,5 @@
-import { spawn, type ChildProcess } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import type { ChildProcess } from "node:child_process";
+import { randomBytes, randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, realpath, rm, stat } from "node:fs/promises";
 import { createServer } from "node:net";
 import os from "node:os";
@@ -10,9 +10,11 @@ import {
   getDeveloperInstructions,
   loadBundledFastDiagramSkill,
   loadBundledSkill,
-  loadBundledSkills
+  loadBundledSkills,
+  NATIVE_CANVAS_CONTROL_INSTRUCTION
 } from "./codex-app-server.js";
 import { resolveOpenCodeBinary } from "./opencode-binary.js";
+import { forceStopNativeCli, spawnNativeCli } from "./native-cli.js";
 import {
   drawsyMcpProcess,
   resolveDrawsyMcpEntry
@@ -68,14 +70,15 @@ type SessionApiKey = {
 };
 
 type OpenCodePermissionRule = {
-  permission: string;
-  pattern: string;
-  action: "allow" | "deny" | "ask";
+  action: string;
+  resource: string;
+  effect: "allow" | "deny" | "ask";
 };
 
 type OpenCodeEvent = {
   type?: unknown;
   properties?: unknown;
+  data?: unknown;
 };
 
 const OPEN_CODE_READY_TIMEOUT_MS = 20_000;
@@ -296,7 +299,6 @@ export const discoverOpenCodeSkills = async (
         name !== entry.name ||
         name.length > 64 ||
         !description ||
-        OPEN_CODE_BLOCKED_CAPABILITY.test(name) ||
         skills.has(name)
       ) {
         continue;
@@ -322,11 +324,7 @@ export const availableOpenCodeSkills = async (
     (await openCodeSkillDirectories(workspaceRoot, homeDirectory)).reverse()
   );
   const nativeNames = new Set(nativeSkills.map((skill) => skill.name));
-  const bundledSkills = (await loadBundledSkills()).filter(
-    (skill) =>
-      !OPEN_CODE_BLOCKED_CAPABILITY.test(skill.name) &&
-      !OPEN_CODE_BLOCKED_CAPABILITY.test(skill.description)
-  );
+  const bundledSkills = await loadBundledSkills();
   return [
     ...nativeSkills,
     ...bundledSkills.filter((skill) => !nativeNames.has(skill.name))
@@ -335,19 +333,19 @@ export const availableOpenCodeSkills = async (
 
 export const openCodeMcpServerOptions = (
   value: unknown
-): AgentControls["mcpServers"] =>
-  Object.entries(toRecord(value))
+): AgentControls["mcpServers"] => {
+  const entries = Array.isArray(value)
+    ? value.flatMap((serverValue) => {
+        const server = toRecord(serverValue);
+        const name = stringValue(server.name);
+        return name ? [[name, server.status] as const] : [];
+      })
+    : Object.entries(toRecord(value));
+  return entries
     .flatMap(([name, statusValue]) => {
-      if (!name.trim() || OPEN_CODE_BLOCKED_CAPABILITY.test(name)) return [];
+      if (!name.trim()) return [];
       const status = toRecord(statusValue);
       const tools = toRecord(status.tools);
-      if (
-        Object.keys(tools).some((toolName) =>
-          OPEN_CODE_BLOCKED_CAPABILITY.test(toolName)
-        )
-      ) {
-        return [];
-      }
       return [
         {
           name,
@@ -363,6 +361,7 @@ export const openCodeMcpServerOptions = (
         ? 1
         : left.name.localeCompare(right.name)
     );
+};
 
 export type OpenCodeTurnFailure = {
   code: "opencode_provider_access_denied" | "opencode_provider_error";
@@ -373,12 +372,14 @@ export const openCodeTurnFailureFromEvent = (
   event: OpenCodeEvent
 ): OpenCodeTurnFailure | null => {
   const type = stringValue(event.type);
-  const properties = toRecord(event.properties);
+  const properties = toRecord(event.properties ?? event.data);
   const info = toRecord(properties.info);
   const errorValue =
     type === "message.updated"
       ? info.error
-      : type === "session.error"
+      : type === "session.error" ||
+        type === "session.execution.failed" ||
+        type === "session.step.failed"
       ? properties.error ?? info.error
       : null;
   const hasError =
@@ -408,103 +409,58 @@ export const openCodeTurnFailureFromEvent = (
   };
 };
 
-export const createOpenCodePermissionRules = (
-  accessMode: AgentAccessMode,
-  runtimePath?: string,
-  skillsEnabled = true
-): OpenCodePermissionRule[] => {
-  return [
-    { permission: "external_directory", pattern: "*", action: "deny" },
-    // OpenCode stores truncated tool results outside the workspace. Its built-in
-    // allowances precede session rules, so restore access only to this runtime's
-    // generated output after the blanket external-directory denial.
-    ...(runtimePath
-      ? ["data/opencode/tool-output", "tmp/opencode"].map((directory) => ({
-          permission: "external_directory",
-          pattern: `${path.join(runtimePath, directory)}/*`,
-          action: "allow" as const
-        }))
-      : []),
-    ...(skillsEnabled
-      ? [
-          { permission: "skill", pattern: "*", action: "allow" as const },
-          ...["*browser*", "*chrome*", "*computer*"].map((pattern) => ({
-            permission: "skill",
-            pattern,
-            action: "deny" as const
-          }))
-        ]
-      : []),
-    { permission: "webfetch", pattern: "*", action: "deny" },
-    { permission: "websearch", pattern: "*", action: "deny" },
-    { permission: "task", pattern: "*", action: "deny" },
-    { permission: "question", pattern: "*", action: "deny" },
-    {
-      permission: "edit",
-      pattern: "*",
-      action: accessMode === "workspace" ? "allow" : "deny"
-    },
-    { permission: "bash", pattern: "*", action: "allow" }
-  ];
+const openCodeErrorFromEvent = (event: OpenCodeEvent) => {
+  const type = stringValue(event.type);
+  const properties = toRecord(event.properties ?? event.data);
+  const info = toRecord(properties.info);
+  return type === "message.updated"
+    ? toRecord(info.error)
+    : type === "session.error" ||
+      type === "session.execution.failed" ||
+      type === "session.step.failed"
+      ? toRecord(properties.error ?? info.error)
+      : {};
 };
+
+const isOpenCodeTurnAbortedEvent = (event: OpenCodeEvent) => {
+  const error = openCodeErrorFromEvent(event);
+  const data = toRecord(error.data);
+  const name = stringValue(error.name) || stringValue(data.name);
+  return name === "MessageAbortedError";
+};
+
+export const createOpenCodePermissionRules = (
+  _accessMode: AgentAccessMode,
+  _runtimePath?: string,
+  _skillsEnabled = true
+): OpenCodePermissionRule[] => [{ action: "*", resource: "*", effect: "allow" }];
 
 const apiKeyProviderFields = (
   value: unknown
 ): AgentApiKeyProviderOption["fields"] => {
-  const apiMethod = Array.isArray(value)
-    ? value.map(toRecord).find((method) => method.type === "api")
-    : undefined;
-  if (!apiMethod) return [];
-
-  return (Array.isArray(apiMethod.prompts) ? apiMethod.prompts : []).flatMap(
-    (promptValue) => {
-      const prompt = toRecord(promptValue);
-      const key = stringValue(prompt.key);
-      const label = stringValue(prompt.message);
-      const type = stringValue(prompt.type);
-      if (!key || !label || (type !== "text" && type !== "select")) return [];
-
-      const whenRecord = toRecord(prompt.when);
-      const whenKey = stringValue(whenRecord.key);
-      const whenOp = stringValue(whenRecord.op);
-      const whenValue = stringValue(whenRecord.value);
-      const when: AgentApiKeyProviderOption["fields"][number]["when"] =
-        whenKey && whenValue && (whenOp === "eq" || whenOp === "neq")
-          ? { key: whenKey, op: whenOp, value: whenValue }
-          : undefined;
-      const options =
-        type === "select"
-          ? (Array.isArray(prompt.options) ? prompt.options : []).flatMap(
-              (optionValue) => {
-                const option = toRecord(optionValue);
-                const optionLabel = stringValue(option.label);
-                const optionValueText = stringValue(option.value);
-                if (!optionLabel || !optionValueText) return [];
-                const hint = stringValue(option.hint);
-                return [
-                  {
-                    label: optionLabel,
-                    value: optionValueText,
-                    ...(hint ? { hint } : {})
-                  }
-                ];
-              }
-            )
-          : undefined;
-      if (type === "select" && !options?.length) return [];
-      const placeholder = stringValue(prompt.placeholder);
-      return [
-        {
-          key,
-          label,
-          type,
-          ...(placeholder ? { placeholder } : {}),
-          ...(options ? { options } : {}),
-          ...(when ? { when } : {})
-        }
-      ];
-    }
-  );
+  const fields = Array.isArray(value)
+    ? value
+    : Array.isArray(toRecord(value).form)
+      ? toRecord(value).form as unknown[]
+      : [];
+  return fields.flatMap((fieldValue) => {
+    const field = toRecord(fieldValue);
+    const key = stringValue(field.key);
+    const label = stringValue(field.title) || key;
+    if (!key || !label || field.type !== "string") return [];
+    const options = stringArray(field.options).map((option) => ({
+      label: option,
+      value: option
+    }));
+    const placeholder = stringValue(field.placeholder);
+    return [{
+      key,
+      label,
+      type: options.length ? "select" : "text",
+      ...(placeholder ? { placeholder } : {}),
+      ...(options.length ? { options } : {})
+    }];
+  });
 };
 
 const modelMimeType = (filePath: string) => {
@@ -654,26 +610,38 @@ const linuxExecutableMountArguments = (
   ];
 };
 
-const runtimeEnvironment = (
-  runtimePath: string,
+export const runtimeEnvironment = (
+  _runtimePath: string,
   previewPort: number | null,
-  skillDirectories: string[]
+  skillDirectories: string[],
+  serverPassword: string
 ) => {
-  const executablePath = executableEnvironment().PATH;
+  const skillConfig = skillDirectories.length
+    ? openCodeInlineSkillConfig(skillDirectories)
+    : undefined;
   const environment: NodeJS.ProcessEnv = {
-    PATH: executablePath,
-    LANG: process.env.LANG,
-    LC_ALL: process.env.LC_ALL,
-    TZ: process.env.TZ,
-    XDG_DATA_HOME: path.join(runtimePath, "data"),
-    XDG_CONFIG_HOME: path.join(runtimePath, "config"),
-    XDG_CACHE_HOME: path.join(runtimePath, "cache"),
-    XDG_STATE_HOME: path.join(runtimePath, "state"),
-    TMPDIR: path.join(runtimePath, "tmp"),
-    OPENCODE_PURE: "1",
-    ...(skillDirectories.length
-      ? { OPENCODE_CONFIG_CONTENT: openCodeInlineSkillConfig(skillDirectories) }
-      : {})
+    ...executableEnvironment(),
+    OPENCODE_SERVER_PASSWORD: serverPassword,
+    ...(skillConfig ? { OPENCODE_CONFIG_CONTENT: (() => {
+      const inherited = process.env.OPENCODE_CONFIG_CONTENT;
+      if (!inherited) return skillConfig;
+      try {
+        const existing = JSON.parse(inherited) as unknown;
+        const overlay = JSON.parse(skillConfig) as unknown;
+        if (isRecord(existing) && isRecord(overlay)) {
+          const inheritedSkills = Array.isArray(existing.skills)
+            ? existing.skills.filter((entry): entry is string => typeof entry === "string")
+            : [];
+          const addedSkills = Array.isArray(overlay.skills)
+            ? overlay.skills.filter((entry): entry is string => typeof entry === "string")
+            : [];
+          return JSON.stringify({ ...existing, ...overlay, skills: [...new Set([...inheritedSkills, ...addedSkills])] });
+        }
+      } catch {
+        return inherited;
+      }
+      return inherited;
+    })() } : {})
   };
   if (previewPort) {
     environment.PORT = String(previewPort);
@@ -772,16 +740,18 @@ export class OpenCodeAppServer {
   private openCodeSessionId: string | null = null;
   private eventsAbort: AbortController | null = null;
   private readonly partKinds = new Map<string, string>();
+  private readonly knownAssistantMessageIds = new Set<string>();
+  private activeAssistantMessageId: string | null = null;
   private readonly apiKeyProviderIds = new Set<string>();
-  private readonly apiKeys = new Map<string, SessionApiKey>();
+  private readonly apiKeyConnections = new Map<string, Set<string>>();
   private readonly providerNames = new Map<string, string>();
-  private accessMode: AgentAccessMode = "workspace";
-  private internetEnabled = true;
+  private serverPassword = "";
   private currentModel: AvailableModel | null = null;
   private agentMetadata: AgentMetadata | null = null;
   private turnActive = false;
   private turnFailure: OpenCodeTurnFailure | null = null;
   private generationMode: "fast" | "draw" = "draw";
+  private drawMode = false;
   private closed = false;
   private lastProcessError = "";
   private resumeOpenCodeSessionId: string | null;
@@ -828,7 +798,7 @@ export class OpenCodeAppServer {
   async getConversationMessages() {
     if (!this.openCodeSessionId) return [];
     const response = await this.request<unknown>(
-      `/session/${encodeURIComponent(this.openCodeSessionId)}/message`
+      `/api/session/${encodeURIComponent(this.openCodeSessionId)}/message`
     );
     const entries = Array.isArray(response)
       ? response
@@ -838,22 +808,30 @@ export class OpenCodeAppServer {
     return entries.flatMap((entry) => {
       const message = toRecord(entry);
       const info = toRecord(message.info);
-      const role = stringValue(info.role) || stringValue(message.role);
+      const role =
+        stringValue(message.type) ||
+        stringValue(info.role) ||
+        stringValue(message.role);
       const id = stringValue(info.id) || stringValue(message.id);
-      const parts = Array.isArray(message.parts)
-        ? message.parts
-        : Array.isArray(toRecord(message.parts).data)
-        ? toRecord(message.parts).data as unknown[]
-        : [];
-      const textParts = parts
+      const metadata = toRecord(message.metadata);
+      const content = Array.isArray(message.content)
+        ? message.content
+        : Array.isArray(message.parts)
+          ? message.parts
+          : Array.isArray(toRecord(message.parts).data)
+            ? toRecord(message.parts).data as unknown[]
+            : [];
+      const textParts = content
         .map(toRecord)
         .filter((part) => part.type === "text" && typeof part.text === "string")
-        .map((part) => part.text as string)
-      // Context envelope parts are internal; the actual user prompt is last.
-      const text =
-        (role === "user"
-          ? extractUserPrompt(textParts.at(-1) || "")
-          : textParts.join("\n")) || "";
+        .map((part) => part.text as string);
+      const messageText = stringValue(message.text);
+      // V2 stores the Drawsy-only context envelope in the user text; metadata
+      // keeps it out of the chat transcript when the conversation is restored.
+      const text = role === "user"
+        ? stringValue(metadata.drawsyUserPrompt) ||
+          extractUserPrompt(messageText || textParts.at(-1) || "")
+        : textParts.join("\n") || messageText;
       return id && text && (role === "user" || role === "assistant")
         ? [{ id, role, text }]
         : [];
@@ -884,6 +862,7 @@ export class OpenCodeAppServer {
     );
 
     const port = await acquireLoopbackPort();
+    this.serverPassword = randomBytes(32).toString("base64url");
     const resolvedOpenCodeBinary = resolveOpenCodeBinary();
     if (!resolvedOpenCodeBinary) {
       throw new Error(
@@ -903,39 +882,12 @@ export class OpenCodeAppServer {
     const environment = runtimeEnvironment(
       this.runtimePath,
       this.session.previewPort,
-      sessionSkillDirectories
+      sessionSkillDirectories,
+      this.serverPassword
     );
-    const isMacOS = process.platform === "darwin";
-    const command = isMacOS ? "/usr/bin/sandbox-exec" : "/usr/bin/bwrap";
-    const args = isMacOS
-      ? [
-          "-p",
-          createSandboxProfile({
-            folderPath: this.folderPath,
-            runtimePath: this.runtimePath,
-            executablePath: openCodeBinary,
-            skillDirectories: sessionSkillDirectories,
-            accessMode: this.accessMode,
-            internetEnabled: this.internetEnabled
-          }),
-          openCodeBinary,
-          "serve",
-          "--hostname",
-          "127.0.0.1",
-          "--port",
-          String(port)
-        ]
-      : createLinuxSandboxArguments({
-          folderPath: this.folderPath,
-          runtimePath: this.runtimePath,
-          accessMode: this.accessMode,
-          executable: openCodeBinary,
-          port,
-          skillSources
-        });
-    const child = spawn(
-      command,
-      args,
+    const child = spawnNativeCli(
+      openCodeBinary,
+      ["serve", "--hostname", "127.0.0.1", "--port", String(port)],
       {
         cwd: this.folderPath,
         env: environment,
@@ -967,13 +919,12 @@ export class OpenCodeAppServer {
 
     this.baseUrl = `http://127.0.0.1:${port}`;
     await this.waitForServer();
-    await this.restoreProviderApiKeys();
     const models = await this.availableModels();
     this.currentModel =
       models.find((model) => model.isDefault) || models[0] || null;
     if (!this.currentModel) {
       throw new Error(
-        "OpenCode has no active free tool-capable model right now."
+        "OpenCode has no active tool-capable model right now."
       );
     }
     this.resumedNativeSession = await this.restoreOpenCodeSession();
@@ -991,7 +942,8 @@ export class OpenCodeAppServer {
     let lastError: unknown;
     while (Date.now() < deadline) {
       try {
-        const response = await fetch(`${this.baseUrl}/global/health`, {
+        const response = await fetch(`${this.baseUrl}/api/info`, {
+          headers: { authorization: `Basic ${Buffer.from(`opencode:${this.serverPassword}`).toString("base64")}` },
           signal: AbortSignal.timeout(
             Math.max(
               1,
@@ -1021,7 +973,8 @@ export class OpenCodeAppServer {
       ...init,
       headers: {
         ...(init.body ? { "content-type": "application/json" } : {}),
-        ...init.headers
+        ...init.headers,
+        authorization: `Basic ${Buffer.from(`opencode:${this.serverPassword}`).toString("base64")}`
       },
       signal: AbortSignal.timeout(30_000)
     });
@@ -1038,47 +991,99 @@ export class OpenCodeAppServer {
   }
 
   private async availableModels(): Promise<AvailableModel[]> {
-    const [config, catalog] = await Promise.all([
-      this.request<JsonObject>("/config/providers"),
-      this.apiKeyProviderIds.size
-        ? this.request<JsonObject>("/provider")
-        : Promise.resolve(null)
-    ]);
-    const defaults = toRecord(config.default);
-    const providers = Array.isArray(config.providers) ? config.providers : [];
+    const [catalog, providersResponse, integrationsResponse, defaultResponse] =
+      await Promise.all([
+        this.request<JsonObject>("/api/model"),
+        this.request<JsonObject>("/api/provider"),
+        this.request<JsonObject>("/api/integration"),
+        this.request<JsonObject>("/api/model/default")
+      ]);
+    const catalogModels = Array.isArray(catalog.data) ? catalog.data : [];
+    const providers = Array.isArray(providersResponse.data)
+      ? providersResponse.data
+      : [];
+    const integrations = Array.isArray(integrationsResponse.data)
+      ? integrationsResponse.data
+      : [];
+    const defaultModel = toRecord(defaultResponse.data);
+    this.apiKeyProviderIds.clear();
+    this.apiKeyConnections.clear();
+    this.providerNames.clear();
+    for (const providerValue of providers) {
+      const provider = toRecord(providerValue);
+      const id = stringValue(provider.id);
+      const name = stringValue(provider.name);
+      if (id && name) this.providerNames.set(id, name);
+    }
+    for (const integrationValue of integrations) {
+      const integration = toRecord(integrationValue);
+      const id = stringValue(integration.id);
+      if (!id || id === "opencode") continue;
+      const methods = Array.isArray(integration.methods)
+        ? integration.methods.map(toRecord)
+        : [];
+      if (!methods.some((method) => method.type === "key")) continue;
+      const name = stringValue(integration.name);
+      if (name) this.providerNames.set(id, name);
+      const connections = Array.isArray(integration.connections)
+        ? integration.connections.map(toRecord)
+        : [];
+      const credentialIds = new Set(
+        connections
+          .filter((connection) => connection.type === "credential")
+          .map((connection) => stringValue(connection.id))
+          .filter(Boolean)
+      );
+      if (credentialIds.size) {
+        this.apiKeyProviderIds.add(id);
+        this.apiKeyConnections.set(id, credentialIds);
+      }
+    }
     const models: AvailableModel[] = [];
     const modelKeys = new Set<string>();
-    const addModel = (
-      providerId: string,
-      providerName: string,
-      modelValue: unknown,
-      isDefault: boolean
-    ) => {
+    for (const modelValue of catalogModels) {
       const model = toRecord(modelValue);
       const modelId = stringValue(model.id);
-      const modelProviderId = stringValue(model.providerID) || providerId;
+      const modelProviderId = stringValue(model.providerID);
+      if (!modelId || !modelProviderId) continue;
+      const providerName =
+        this.providerNames.get(modelProviderId) ||
+        humanizeProviderId(modelProviderId);
       const capabilities = toRecord(model.capabilities);
-      const cost = toRecord(model.cost);
+      const cost = Array.isArray(model.cost) ? model.cost : [];
+      const costValuesAreZero = (value: unknown): boolean => {
+        if (typeof value === "number") return value === 0;
+        if (Array.isArray(value)) {
+          return value.length > 0 && value.every(costValuesAreZero);
+        }
+        if (isRecord(value)) {
+          const values = Object.values(value);
+          return values.length > 0 && values.every(costValuesAreZero);
+        }
+        return false;
+      };
       const isFree =
         modelProviderId === "opencode" &&
-        cost.input === 0 &&
-        cost.output === 0;
+        costValuesAreZero(cost);
       const isPersonal = this.apiKeyProviderIds.has(modelProviderId);
       const key = `${modelProviderId}:${modelId}`;
       if (
-        !modelId ||
         model.status !== "active" ||
-        capabilities.toolcall !== true ||
-        (!isFree && !isPersonal) ||
+        model.enabled !== true ||
+        capabilities.tools !== true ||
         modelKeys.has(key)
       ) {
-        return;
+        continue;
       }
       modelKeys.add(key);
-      const variants = toRecord(model.variants);
-      const efforts = Object.entries(variants).flatMap(([id, value]) => {
-        const effort = stringValue(toRecord(value).reasoningEffort);
-        return effort ? [{ id, description: `${effort} reasoning` }] : [];
+      const variants = Array.isArray(model.variants) ? model.variants : [];
+      const efforts = variants.flatMap((variantValue) => {
+        const variant = toRecord(variantValue);
+        const id = stringValue(variant.id);
+        if (!id) return [];
+        const effort =
+          stringValue(toRecord(variant.settings).reasoningEffort) || id;
+        return [{ id, description: `${effort} reasoning` }];
       });
       models.push({
         providerId: modelProviderId,
@@ -1087,114 +1092,76 @@ export class OpenCodeAppServer {
         displayName: stringValue(model.name) || modelId,
         efforts,
         isFree,
-        supportsImageInput: toRecord(capabilities.input).image === true,
-        isDefault
+        supportsImageInput: stringArray(capabilities.input).includes("image"),
+        isDefault:
+          stringValue(defaultModel.providerID) === modelProviderId &&
+          stringValue(defaultModel.id) === modelId
       });
-    };
-    for (const providerValue of providers) {
-      const provider = toRecord(providerValue);
-      const providerId = stringValue(provider.id);
-      if (!providerId) continue;
-      const providerName =
-        stringValue(provider.name) || humanizeProviderId(providerId);
-      this.providerNames.set(providerId, providerName);
-      for (const modelValue of Object.values(toRecord(provider.models))) {
-        const model = toRecord(modelValue);
-        const modelProviderId = stringValue(model.providerID) || providerId;
-        addModel(
-          providerId,
-          providerName,
-          model,
-          defaults[modelProviderId] === stringValue(model.id)
-        );
-      }
     }
-    const catalogProviders = catalog
-      ? Array.isArray(catalog.all)
-        ? catalog.all
-        : Array.isArray(catalog.providers)
-        ? catalog.providers
-        : []
-      : [];
-    for (const providerValue of catalogProviders) {
-      const provider = toRecord(providerValue);
-      const providerId = stringValue(provider.id);
-      if (!providerId || !this.apiKeyProviderIds.has(providerId)) continue;
-      const providerName =
-        stringValue(provider.name) || humanizeProviderId(providerId);
-      this.providerNames.set(providerId, providerName);
-      for (const modelValue of Object.values(toRecord(provider.models))) {
-        addModel(providerId, providerName, modelValue, false);
-      }
-    }
-    return models.sort((left, right) => {
+    models.sort((left, right) => {
       if (left.isFree !== right.isFree) return left.isFree ? -1 : 1;
       return left.displayName.localeCompare(right.displayName);
     });
+    return models;
   }
 
-  private async restoreProviderApiKeys() {
-    for (const [providerId, credentials] of this.apiKeys) {
-      await this.request<boolean>(`/auth/${encodeURIComponent(providerId)}`, {
-        method: "PUT",
-        body: JSON.stringify({
-          type: "api",
-          key: credentials.key,
-          ...(Object.keys(credentials.metadata).length
-            ? { metadata: credentials.metadata }
-            : {})
-        })
-      });
-    }
-  }
 
   private async apiKeyProviders(): Promise<AgentApiKeyProviderOption[]> {
-    const [catalog, auth] = await Promise.all([
-      this.request<JsonObject>("/provider"),
-      this.request<JsonObject>("/provider/auth")
-    ]);
-    const providers = Array.isArray(catalog.all)
-      ? catalog.all
-      : Array.isArray(catalog.providers)
-      ? catalog.providers
-      : [];
-
-    return providers
-      .flatMap((providerValue) => {
-        const provider = toRecord(providerValue);
-        const id = stringValue(provider.id);
-        const name = stringValue(provider.name) || humanizeProviderId(id);
-        const credentialEnvironment = stringArray(provider.env);
-        const models = Object.values(toRecord(provider.models));
-        const toolModelCount = models.filter((modelValue) => {
-          const model = toRecord(modelValue);
-          return (
-            model.status === "active" &&
-            toRecord(model.capabilities).toolcall === true
-          );
-        }).length;
-        if (
-          !id ||
-          id === "opencode" ||
-          !credentialEnvironment.length ||
-          !toolModelCount
-        ) {
-          return [];
+    const response = await this.request<JsonObject>("/api/integration");
+    const integrations = Array.isArray(response.data) ? response.data : [];
+    this.apiKeyProviderIds.clear();
+    this.apiKeyConnections.clear();
+    return integrations
+      .flatMap((integrationValue) => {
+        const integration = toRecord(integrationValue);
+        const id = stringValue(integration.id);
+        if (!id || id === "opencode") return [];
+        const methods = Array.isArray(integration.methods)
+          ? integration.methods.map(toRecord)
+          : [];
+        const keyMethod = methods.find((method) => method.type === "key");
+        if (!keyMethod) return [];
+        const name =
+          stringValue(integration.name) || humanizeProviderId(id);
+        const connections = Array.isArray(integration.connections)
+          ? integration.connections.map(toRecord)
+          : [];
+        const credentialIds = new Set(
+          connections
+            .filter((connection) => connection.type === "credential")
+            .map((connection) => stringValue(connection.id))
+            .filter(Boolean)
+        );
+        if (credentialIds.size) {
+          this.apiKeyProviderIds.add(id);
+          this.apiKeyConnections.set(id, credentialIds);
         }
         this.providerNames.set(id, name);
-        const fields = apiKeyProviderFields(auth[id]);
-        return [
-          {
-            id,
-            name,
-            label: `${toolModelCount} tool-capable model${
-              toolModelCount === 1 ? "" : "s"
-            }`,
-            fields
-          }
-        ];
+        return [{
+          id,
+          name,
+          label: stringValue(keyMethod.label) || "API key",
+          fields: apiKeyProviderFields(keyMethod.form)
+        }];
       })
       .sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  private async waitForIntegration(providerId: string) {
+    const deadline = Date.now() + OPEN_CODE_READY_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      try {
+        await this.request<JsonObject>(
+          `/api/integration/${encodeURIComponent(providerId)}`
+        );
+        return;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        if (!/not found|404|503/i.test(message)) throw error;
+        await sleep(150);
+      }
+    }
+    throw new Error("That provider is still loading in OpenCode. Try again shortly.");
   }
 
   private metadataFromModel(model: AvailableModel): AgentMetadata {
@@ -1202,20 +1169,20 @@ export class OpenCodeAppServer {
       model: model.modelId,
       modelProvider: model.providerId,
       reasoningEffort: model.efforts[0]?.id || null,
-      serviceTier: model.isFree ? "free" : "personal API key"
+      serviceTier: model.isFree ? "free" : null
     };
   }
 
   private permissionRules() {
     return createOpenCodePermissionRules(
-      this.accessMode,
+      "workspace",
       this.runtimePath ?? undefined
     );
   }
 
   private async createOpenCodeSession() {
     if (!this.currentModel) throw new Error("OpenCode model is not ready.");
-    const session = await this.request<JsonObject>("/session", {
+    const response = await this.request<JsonObject>("/api/session", {
       method: "POST",
       body: JSON.stringify({
         title: "Drawsy AI",
@@ -1223,9 +1190,10 @@ export class OpenCodeAppServer {
           providerID: this.currentModel.providerId,
           id: this.currentModel.modelId
         },
-        permission: this.permissionRules()
+        permissions: this.permissionRules()
       })
     });
+    const session = toRecord(response.data);
     const id = stringValue(session.id);
     if (!id) throw new Error("OpenCode did not create a session.");
     this.openCodeSessionId = id;
@@ -1235,9 +1203,10 @@ export class OpenCodeAppServer {
   private async restoreOpenCodeSession() {
     if (!this.resumeOpenCodeSessionId) return false;
     try {
-      const session = await this.request<JsonObject>(
-        `/session/${encodeURIComponent(this.resumeOpenCodeSessionId)}`
+      const response = await this.request<JsonObject>(
+        `/api/session/${encodeURIComponent(this.resumeOpenCodeSessionId)}`
       );
+      const session = toRecord(response.data);
       const id = stringValue(session.id);
       if (!id || id !== this.resumeOpenCodeSessionId) return false;
       this.openCodeSessionId = id;
@@ -1250,10 +1219,9 @@ export class OpenCodeAppServer {
   private async attachDrawsyMcp() {
     const mcpEntry = resolveDrawsyMcpEntry(import.meta.url);
     const mcpProcess = drawsyMcpProcess(mcpEntry);
-    await this.request<JsonObject>("/mcp", {
-      method: "POST",
+    await this.request<void>("/api/experimental/mcp/drawsy", {
+      method: "PUT",
       body: JSON.stringify({
-        name: "drawsy",
         config: {
           type: "local",
           command: [mcpProcess.command, ...mcpProcess.args],
@@ -1269,19 +1237,26 @@ export class OpenCodeAppServer {
               ? { DRAWSY_PREVIEW_PORT: String(this.session.previewPort) }
               : {})
           },
-          enabled: true,
-          timeout: 45_000
+          timeout: {
+            startup: 45_000,
+            catalog: 45_000,
+            execution: 45_000
+          }
         }
       })
     });
     const deadline = Date.now() + OPEN_CODE_READY_TIMEOUT_MS;
     while (Date.now() < deadline) {
-      const statuses = await this.request<JsonObject>("/mcp");
-      const drawsy = toRecord(statuses.drawsy);
-      if (drawsy.status === "connected") return;
-      if (drawsy.status === "failed") {
+      const response = await this.request<JsonObject>("/api/mcp");
+      const servers = Array.isArray(response.data) ? response.data : [];
+      const drawsy = toRecord(
+        servers.map(toRecord).find((server) => server.name === "drawsy")
+      );
+      const status = toRecord(drawsy.status);
+      if (status.status === "connected") return;
+      if (status.status === "failed") {
         throw new Error(
-          stringValue(drawsy.error) || "Drawsy MCP failed to start in OpenCode."
+          stringValue(status.error) || "Drawsy MCP failed to start in OpenCode."
         );
       }
       await sleep(150);
@@ -1342,7 +1317,9 @@ export class OpenCodeAppServer {
     const fastSkillText = fastMode
       ? await loadBundledFastDiagramSkill()
       : null;
+    await this.refreshKnownAssistantMessageIds();
     this.generationMode = generationMode;
+    this.drawMode = pointerDrawMode;
     this.beginTurn();
     const parts: Array<JsonObject> = [];
     for (const context of contexts) {
@@ -1416,7 +1393,7 @@ export class OpenCodeAppServer {
     if (pointerDrawMode) {
       parts.push({
         type: "text",
-        text: "Draw mode is ON for this turn. OpenCode has no native Browser/Chrome control in Drawsy Companion. Use Drawsy MCP for structured canvas work, and clearly say if the user asks for freehand current-tab input that is unavailable in this engine."
+        text: NATIVE_CANVAS_CONTROL_INSTRUCTION
       });
     }
     if (fastMode && fastSkillText) {
@@ -1429,25 +1406,34 @@ export class OpenCodeAppServer {
 
     try {
       await this.request<void>(
-        `/session/${encodeURIComponent(this.openCodeSessionId)}/prompt_async`,
+        `/api/experimental/session/${encodeURIComponent(this.openCodeSessionId)}/instructions/entries/drawsy`,
+        {
+          method: "PUT",
+          body: JSON.stringify({
+            value: {
+              text: getDeveloperInstructions(
+                this.session.surfaceKind,
+                this.session.previewPort,
+                this.session.workspaceMode,
+                generationMode,
+                pointerDrawMode
+              )
+            }
+          })
+        }
+      );
+      await this.request<void>(
+        `/api/session/${encodeURIComponent(this.openCodeSessionId)}/prompt`,
         {
           method: "POST",
           body: JSON.stringify({
-            model: {
-              providerID: this.currentModel.providerId,
-              modelID: this.currentModel.modelId
-            },
-            ...(this.agentMetadata?.reasoningEffort &&
-            this.agentMetadata.reasoningEffort !== "default"
-              ? { variant: this.agentMetadata.reasoningEffort }
-              : {}),
-            system: getDeveloperInstructions(
-              this.session.surfaceKind,
-              this.session.previewPort,
-              this.session.workspaceMode,
-              generationMode
+            text: parts.map((part) => stringValue(part.text)).filter(Boolean).join("\n\n"),
+            files: parts.flatMap((part) =>
+              part.type === "file" && typeof part.url === "string"
+                ? [{ uri: part.url, name: stringValue(part.filename), description: "Drawsy canvas context image" }]
+                : []
             ),
-            parts
+            metadata: { drawsyUserPrompt: message }
           })
         }
       );
@@ -1459,6 +1445,7 @@ export class OpenCodeAppServer {
 
   private beginTurn() {
     this.turnFailure = null;
+    this.activeAssistantMessageId = null;
     this.turnActive = true;
     this.emit({ type: "turn.status", data: { status: "inProgress" } });
   }
@@ -1468,9 +1455,18 @@ export class OpenCodeAppServer {
       throw new Error("No OpenCode turn is running.");
     }
     await this.request<boolean>(
-      `/session/${encodeURIComponent(this.openCodeSessionId)}/abort`,
+      `/api/session/${encodeURIComponent(this.openCodeSessionId)}/interrupt`,
       { method: "POST" }
     );
+  }
+
+  private async refreshKnownAssistantMessageIds() {
+    const messages = await this.getConversationMessages();
+    for (const message of messages) {
+      if (message.role === "assistant") {
+        this.knownAssistantMessageIds.add(message.id);
+      }
+    }
   }
 
   async steerTurn(message: string) {
@@ -1481,25 +1477,11 @@ export class OpenCodeAppServer {
       throw new Error("No OpenCode turn is running.");
     }
     await this.request<void>(
-      `/session/${encodeURIComponent(this.openCodeSessionId)}/prompt_async`,
+      `/api/session/${encodeURIComponent(this.openCodeSessionId)}/prompt`,
       {
         method: "POST",
         body: JSON.stringify({
-          model: {
-            providerID: this.currentModel.providerId,
-            modelID: this.currentModel.modelId
-          },
-          ...(this.agentMetadata?.reasoningEffort &&
-          this.agentMetadata.reasoningEffort !== "default"
-            ? { variant: this.agentMetadata.reasoningEffort }
-            : {}),
-          system: getDeveloperInstructions(
-            this.session.surfaceKind,
-            this.session.previewPort,
-            this.session.workspaceMode,
-            this.generationMode
-          ),
-          parts: [{ type: "text", text: message }],
+            text: message,
           delivery: "steer"
         })
       }
@@ -1510,31 +1492,23 @@ export class OpenCodeAppServer {
     const [models, apiKeyProviders, mcpStatuses, skills] = await Promise.all([
       this.availableModels(),
       this.apiKeyProviders(),
-      this.request<JsonObject>("/mcp"),
+      this.request<JsonObject>("/api/mcp"),
       availableOpenCodeSkills(this.folderPath)
     ]);
     return {
-      accessMode: this.accessMode,
-      internetEnabled: this.internetEnabled,
-      internetControl: openCodeInternetControl({
-        platform: process.platform,
-        isolateProcessGroup: this.session.isolateProcessGroup
-      }),
       models: models.map((model) => ({
         id: `${model.providerId}:${model.modelId}`,
         model: model.modelId,
         providerId: model.providerId,
         displayName: model.displayName,
-        description: model.isFree
-          ? `Free · ${model.providerName}`
-          : `Your API key · ${model.providerName}`,
+        description: model.isFree ? `Free · ${model.providerName}` : model.providerName,
         efforts: model.efforts,
         defaultEffort: model.efforts[0]?.id || "default",
         isDefault: model.isDefault
       })),
       skills,
       plugins: [],
-      mcpServers: openCodeMcpServerOptions(mcpStatuses),
+      mcpServers: openCodeMcpServerOptions(mcpStatuses.data),
       apiKeyProviders
     };
   }
@@ -1543,12 +1517,11 @@ export class OpenCodeAppServer {
     if (this.turnActive) {
       throw new Error("Wait for the current OpenCode turn to finish.");
     }
-    if (
-      settings.internetEnabled === false && process.platform === "linux"
-    ) {
-      throw new Error(
-        "Internet cannot be safely disabled in this OpenCode session on Linux because its sandbox does not isolate outbound networking."
-      );
+    if (settings.accessMode !== undefined || settings.internetEnabled !== undefined) {
+      throw new Error("Local OpenCode uses native full-access settings.");
+    }
+    if (settings.accessMode !== undefined || settings.internetEnabled !== undefined) {
+      throw new Error("Local OpenCode uses native full-access settings.");
     }
     const models = await this.availableModels();
     const nextModel = settings.model
@@ -1570,32 +1543,26 @@ export class OpenCodeAppServer {
     ) {
       throw new Error("That reasoning level is not available for this model.");
     }
-    const nextAccessMode = settings.accessMode ?? this.accessMode;
-    const nextInternetEnabled =
-      settings.internetEnabled ?? this.internetEnabled;
-    const mustRestart =
-      nextAccessMode !== this.accessMode ||
-      nextInternetEnabled !== this.internetEnabled;
-    this.accessMode = nextAccessMode;
-    this.internetEnabled = nextInternetEnabled;
+    if (this.openCodeSessionId) {
+      await this.request<void>(
+        `/api/session/${encodeURIComponent(this.openCodeSessionId)}/model`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            model: {
+              id: nextModel.modelId,
+              providerID: nextModel.providerId,
+              ...(requestedEffort ? { variant: requestedEffort } : {})
+            }
+          })
+        }
+      );
+    }
     this.currentModel = nextModel;
     this.agentMetadata = {
       ...this.metadataFromModel(nextModel),
       reasoningEffort: requestedEffort || null
     };
-    if (mustRestart) {
-      await this.restartRuntime();
-      this.currentModel =
-        (await this.availableModels()).find(
-          (model) =>
-            model.providerId === nextModel.providerId &&
-            model.modelId === nextModel.modelId
-        ) || nextModel;
-      this.agentMetadata = {
-        ...this.metadataFromModel(this.currentModel),
-        reasoningEffort: requestedEffort || null
-      };
-    }
     return { agent: this.metadata, controls: await this.getControls() };
   }
 
@@ -1623,22 +1590,23 @@ export class OpenCodeAppServer {
     if (Object.keys(metadata).some((key) => !allowedMetadata.has(key))) {
       throw new Error("That provider field is not available.");
     }
-    await this.request<boolean>(
-      `/auth/${encodeURIComponent(input.providerId)}`,
+    await this.waitForIntegration(input.providerId);
+    try {
+      await this.request<void>(
+      `/api/integration/${encodeURIComponent(input.providerId)}/connect/key`,
       {
-        method: "PUT",
+        method: "POST",
         body: JSON.stringify({
-          type: "api",
           key: input.apiKey,
-          ...(Object.keys(metadata).length ? { metadata } : {})
+          ...(Object.keys(metadata).length ? { answer: metadata } : {})
         })
       }
-    );
-    this.apiKeys.set(input.providerId, {
-      key: input.apiKey,
-      metadata
-    });
+      );
+    } catch {
+      throw new Error("Could not save this API key. Check it and try again.");
+    }
     this.apiKeyProviderIds.add(input.providerId);
+    await this.apiKeyProviders();
     return { agent: this.metadata, controls: await this.getControls() };
   }
 
@@ -1658,8 +1626,11 @@ export class OpenCodeAppServer {
     this.openCodeSessionId = null;
     this.partKinds.clear();
     if (processToStop && processToStop.pid) {
+      if (process.platform === "win32") {
+        forceStopNativeCli(processToStop);
+      } else {
       const processGroup =
-        this.session.isolateProcessGroup && process.platform !== "win32"
+        this.session.isolateProcessGroup
           ? -processToStop.pid
           : null;
       const signal = (value: NodeJS.Signals) => {
@@ -1676,6 +1647,7 @@ export class OpenCodeAppServer {
       signal("SIGTERM");
       await Promise.race([exit, sleep(1_500)]);
       signal("SIGKILL");
+      }
     }
     const runtimePath = this.runtimePath;
     this.runtimePath = null;
@@ -1691,7 +1663,6 @@ export class OpenCodeAppServer {
   close() {
     if (this.closed) return;
     this.closed = true;
-    this.apiKeys.clear();
     this.apiKeyProviderIds.clear();
     void this.stopRuntime();
   }
@@ -1699,7 +1670,10 @@ export class OpenCodeAppServer {
   private async consumeEvents(signal: AbortSignal) {
     try {
       if (!this.baseUrl) return;
-      const response = await fetch(`${this.baseUrl}/event`, { signal });
+      const response = await fetch(`${this.baseUrl}/api/event`, {
+        headers: { authorization: `Basic ${Buffer.from(`opencode:${this.serverPassword}`).toString("base64")}` },
+        signal
+      });
       if (!response.ok || !response.body) {
         throw new Error(`OpenCode event stream failed (${response.status}).`);
       }
@@ -1747,7 +1721,7 @@ export class OpenCodeAppServer {
 
   private handleEvent(event: OpenCodeEvent) {
     const type = stringValue(event.type);
-    const properties = toRecord(event.properties);
+    const properties = toRecord(event.properties ?? event.data);
     const info = toRecord(properties.info);
     const eventSessionId =
       stringValue(properties.sessionID) || stringValue(info.sessionID);
@@ -1758,8 +1732,46 @@ export class OpenCodeAppServer {
     ) {
       return;
     }
+    if (
+      type.startsWith("session.execution.") ||
+      type.startsWith("session.text.") ||
+      type.startsWith("session.reasoning.") ||
+      type.startsWith("session.tool.") ||
+      type === "session.step.started" ||
+      type === "session.step.failed"
+    ) {
+      this.handleV2Event(type, properties);
+      return;
+    }
+    if (type === "message.updated") {
+      const role = stringValue(info.role);
+      const messageId = stringValue(info.id);
+      if (role === "assistant" && messageId) {
+        const isNewAssistantMessage =
+          !this.knownAssistantMessageIds.has(messageId);
+        if (this.turnActive && isNewAssistantMessage) {
+          this.activeAssistantMessageId = messageId;
+        }
+        this.knownAssistantMessageIds.add(messageId);
+      }
+    }
+    const eventMessageId = stringValue(info.id);
+    const isCurrentAssistantEvent =
+      type !== "message.updated" ||
+      !eventMessageId ||
+      eventMessageId === this.activeAssistantMessageId;
+    if (
+      isOpenCodeTurnAbortedEvent(event) &&
+      this.turnActive &&
+      isCurrentAssistantEvent
+    ) {
+      this.turnActive = false;
+      this.activeAssistantMessageId = null;
+      this.emit({ type: "turn.status", data: { status: "interrupted" } });
+      return;
+    }
     const failure = openCodeTurnFailureFromEvent(event);
-    if (failure) {
+    if (failure && isCurrentAssistantEvent) {
       if (!this.turnActive || this.turnFailure) return;
       this.turnFailure = failure;
       this.turnActive = false;
@@ -1777,31 +1789,50 @@ export class OpenCodeAppServer {
       const status = toRecord(properties.status);
       const state = stringValue(status.type) || stringValue(properties.status);
       if (state === "busy") {
-        if (!this.turnFailure) {
+        if (this.turnActive && !this.turnFailure) {
           this.emit({ type: "turn.status", data: { status: "inProgress" } });
         }
-      } else if (state === "idle") {
+      } else if (
+        state === "idle" &&
+        this.turnActive &&
+        this.activeAssistantMessageId
+      ) {
         this.turnActive = false;
         if (!this.turnFailure) {
           this.emit({ type: "turn.status", data: { status: "completed" } });
         }
+        this.activeAssistantMessageId = null;
       }
       return;
     }
     if (type === "session.idle") {
+      if (!this.turnActive || !this.activeAssistantMessageId) return;
       this.turnActive = false;
       if (!this.turnFailure) {
         this.emit({ type: "turn.status", data: { status: "completed" } });
       }
+      this.activeAssistantMessageId = null;
       return;
     }
     if (type === "message.part.updated") {
-      this.handlePart(toRecord(properties.part));
+      const part = toRecord(properties.part);
+      const partMessageId = stringValue(part.messageID);
+      if (
+        !this.turnActive ||
+        !this.activeAssistantMessageId ||
+        (partMessageId && partMessageId !== this.activeAssistantMessageId)
+      ) {
+        return;
+      }
+      this.handlePart(part);
       return;
     }
     if (type !== "message.part.delta") return;
+    if (!this.turnActive || !this.activeAssistantMessageId) return;
     const partId = stringValue(properties.partID);
-    const messageId = stringValue(properties.messageID) || randomUUID();
+    const deltaMessageId = stringValue(properties.messageID);
+    if (deltaMessageId && deltaMessageId !== this.activeAssistantMessageId) return;
+    const messageId = deltaMessageId || randomUUID();
     const delta = stringValue(properties.delta);
     const kind = this.partKinds.get(partId);
     if (!delta) return;
@@ -1820,6 +1851,117 @@ export class OpenCodeAppServer {
         type: "assistant.delta",
         data: { itemId: messageId, delta }
       });
+    }
+  }
+
+  private handleV2Event(type: string, properties: JsonObject) {
+    const eventSessionId = stringValue(properties.sessionID);
+    if (
+      this.openCodeSessionId &&
+      eventSessionId &&
+      eventSessionId !== this.openCodeSessionId
+    ) {
+      return;
+    }
+    const messageId =
+      stringValue(properties.assistantMessageID) ||
+      stringValue(properties.messageID);
+    if (messageId && this.turnActive) {
+      this.activeAssistantMessageId = messageId;
+    }
+    if (type === "session.execution.started") {
+      if (this.turnActive && !this.turnFailure) {
+        this.emit({ type: "turn.status", data: { status: "inProgress" } });
+      }
+      return;
+    }
+    if (type === "session.text.delta") {
+      const delta = stringValue(properties.delta);
+      if (this.turnActive && messageId && delta) {
+        this.emit({ type: "assistant.delta", data: { itemId: messageId, delta } });
+      }
+      return;
+    }
+    if (type === "session.text.ended") {
+      const text = stringValue(properties.text);
+      if (this.turnActive && messageId && text) {
+        this.emit({ type: "assistant.final", data: { itemId: messageId, text } });
+      }
+      return;
+    }
+    if (type.startsWith("session.reasoning.")) {
+      if (!this.turnActive) return;
+      const completed = type === "session.reasoning.ended";
+      this.emit({
+        type: "tool.status",
+        data: {
+          itemId:
+            stringValue(properties.reasoningID) ||
+            stringValue(properties.partID) ||
+            messageId ||
+            randomUUID(),
+          tool: "reasoning",
+          status: completed ? "completed" : "inProgress",
+          message: completed ? "Reasoning complete" : "Reasoning through the request"
+        }
+      });
+      return;
+    }
+    if (type.startsWith("session.tool.")) {
+      if (!this.turnActive) return;
+      const callId =
+        stringValue(properties.callID) ||
+        stringValue(properties.toolID) ||
+        stringValue(properties.id) ||
+        randomUUID();
+      const toolValue = toRecord(properties.tool);
+      const metadata = toRecord(properties.metadata);
+      const name =
+        stringValue(properties.name) ||
+        stringValue(toolValue.name) ||
+        stringValue(metadata.name) ||
+        "tool";
+      const status =
+        type === "session.tool.success"
+          ? "completed"
+          : type === "session.tool.failed"
+            ? "failed"
+            : "inProgress";
+      this.emit({
+        type: "tool.status",
+        data: {
+          itemId: callId,
+          tool: name,
+          status,
+          ...(status === "failed"
+            ? { error: "OpenCode tool failed." }
+            : {})
+        }
+      });
+      return;
+    }
+    if (type === "session.execution.failed" || type === "session.step.failed") {
+      if (!this.turnActive || this.turnFailure) return;
+      const failure = openCodeTurnFailureFromEvent({ type, data: properties });
+      if (failure) {
+        this.turnFailure = failure;
+        this.turnActive = false;
+        this.emit({ type: "error", data: failure });
+        this.emit({ type: "turn.status", data: { status: "failed" } });
+      }
+      return;
+    }
+    if (!this.turnActive) return;
+    if (type === "session.execution.succeeded") {
+      this.turnActive = false;
+      this.emit({ type: "turn.status", data: { status: "completed" } });
+      this.activeAssistantMessageId = null;
+      return;
+    }
+    if (type === "session.execution.interrupted") {
+      this.turnActive = false;
+      this.emit({ type: "turn.status", data: { status: "interrupted" } });
+      this.activeAssistantMessageId = null;
     }
   }
 

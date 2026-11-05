@@ -11,7 +11,11 @@ export const resolveDrawsyMcpEntry = (moduleUrl: string) => {
   );
 };
 
-export const drawsyMcpProcess = (entry: string) => ({
+export const drawsyMcpProcess = (entry: string): {
+  command: string;
+  args: string[];
+  environment: Record<string, string>;
+} => ({
   command: process.execPath,
   args: [entry],
   environment: process.versions.electron

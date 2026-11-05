@@ -112,9 +112,6 @@ export async function printDashboard(state: Dashboard, animate = false): Promise
     if (!engine.installed) {
       label = "Not found";
       color = colors.muted;
-    } else if (engine.id === "opencode" && process.platform === "win32") {
-      label = "Installed · unavailable on Windows";
-      color = colors.amber;
     } else {
       label = `Available${engine.version ? ` · v${engine.version}` : ""}`;
       color = colors.green;

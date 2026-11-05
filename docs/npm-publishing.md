@@ -12,7 +12,7 @@ GitHub builds and publishes that version to npm
 Users install it or choose when to update with npm
 ```
 
-Node runs the CLI. npm installs and updates it. Windows Task Scheduler, macOS launchd, or Linux systemd starts it at sign-in when the user enables that option. Codex and OpenCode stay installed and signed in as before. Desktop releases do not publish npm versions; the optional GitHub CLI download is a separate workflow.
+Node runs the CLI. npm installs and updates it. Windows Task Scheduler, macOS launchd, or Linux systemd starts it at sign-in when the user enables that option. The coding harnesses stay installed and signed in as before. Desktop releases do not publish npm versions; the optional GitHub CLI download is a separate workflow.
 
 The Companion CLI is published from `.github/workflows/npm-publish.yml`. The workflow accepts two authentication methods:
 

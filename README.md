@@ -5,9 +5,9 @@
 [![npm version](https://img.shields.io/npm/v/%40drawsy%2Fcompanion?label=npm)](https://www.npmjs.com/package/@drawsy/companion)
 [![MIT License](https://img.shields.io/badge/license-MIT-685ED8.svg)](LICENSE)
 
-Drawsy Companion is the local desktop runtime that connects the Drawsy web client to Codex or OpenCode already installed on the user's device.
+Drawsy Companion is the local desktop runtime that connects the Drawsy web client to local coding harnesses already installed on the user's device: Codex, OpenCode, Pi, Oh My Pi, and DeepSeek Harness.
 
-It is a bridge, not an AI engine, hosted backend, or cloud service. The desktop app keeps the local bridge available in the background, detects the installed engines, starts a scoped local session when Drawsy requests one, and exposes the Drawsy MCP only to that session.
+It is a bridge, not an AI engine, hosted backend, or cloud service. The desktop app keeps the local bridge available in the background, detects installed harnesses, starts a local session in the selected working directory when Drawsy requests one, and exposes the Drawsy MCP only to that session.
 
 ## Install from a terminal
 
@@ -25,7 +25,7 @@ Windows (64-bit), in Command Prompt or PowerShell:
 winget install --id 9PD4MGJ9BW4F --source msstore
 ```
 
-The Store app is also available at [apps.microsoft.com/detail/9PD4MGJ9BW4F](https://apps.microsoft.com/detail/9PD4MGJ9BW4F). macOS/Linux use the GitHub installer command above. For people who want terminal-only background controls, the public npm package [@drawsy/companion](https://www.npmjs.com/package/@drawsy/companion) is also available. It requires Node.js 22 or later; install with npm, pnpm, or Bun, then run `drawsy-companion setup`. That starts the local server and enables startup when you sign in. The CLI does not install Codex/OpenCode or change their login flow.
+The Store app is also available at [apps.microsoft.com/detail/9PD4MGJ9BW4F](https://apps.microsoft.com/detail/9PD4MGJ9BW4F). macOS/Linux use the GitHub installer command above. For people who want terminal-only background controls, the public npm package [@drawsy/companion](https://www.npmjs.com/package/@drawsy/companion) is also available. It requires Node.js 22 or later; install with npm, pnpm, or Bun, then run `drawsy-companion setup`. That starts the local server and enables startup when you sign in. The CLI does not install a harness or change its login flow.
 
 See [installation choices and CLI commands](docs/cli-install.md) for updates, background controls, and removal. Desktop app releases and npm package releases are separate GitHub workflows.
 
@@ -41,25 +41,22 @@ macOS and Linux installers are published on the [GitHub Releases page](https://g
 
 The GitHub Windows `.exe` and `.zip` are unsigned and may show a security warning. The Store version is the recommended Windows install.
 
-Install and launch the companion when you want to use local mode. It stays visible as a tray/menu-bar application while it is running and listens only on loopback. Windows opens a small welcome window with **Open Drawsy**, which opens https://drawsyai.com in your default browser, and the Companion, Codex, and OpenCode statuses. Status is refreshed when you reopen the window or choose **Refresh engine status** in the tray menu. Linux keeps its existing status window. Click the tray icon or choose **Open status window** to reopen it. Closing the window hides it back to the tray. It does not start automatically when you sign in. Choose **Quit Drawsy Companion** from the tray/menu-bar menu to stop local access; a terminal process is not required for normal use.
+Install and launch the companion when you want to use local mode. It stays visible as a tray/menu-bar application while it is running and listens only on loopback. Windows opens a small welcome window with **Open Drawsy**, which opens https://drawsyai.com in your default browser, and status for Companion plus all five supported harnesses. Status is refreshed when you reopen the window or choose **Refresh engine status** in the tray menu. Linux keeps its existing status window. Click the tray icon or choose **Open status window** to reopen it. Closing the window hides it back to the tray. It does not start automatically when you sign in. Choose **Quit Drawsy Companion** from the tray/menu-bar menu to stop local access; a terminal process is not required for normal use.
 
-The companion does not install, bundle, or authenticate Codex or OpenCode. The user must already have one of those engines available on the device. The tray status reports which engine is detected. Codex is supported on the packaged desktop targets; the current OpenCode runtime supports macOS and Linux.
+The companion does not install, bundle, or authenticate any harness. It reports whether each executable is detected; that status does not prove that the harness can start or that its provider account is configured. Sessions run in the selected folder as their working directory and use the harness's native profile, tools, login, and permission behavior. Companion does not impose an additional filesystem jail. Harness availability and runtime support can differ by operating system; detection alone is not a runtime compatibility claim.
 
-## Native current-tab drawing
+Companion discovers executables on its process `PATH` and the user's login-shell `PATH` where available. Override a path with `DRAWSY_CODEX_BIN`, `DRAWSY_OPENCODE_BIN`, `DRAWSY_PI_BIN`, `DRAWSY_OMP_BIN`, or `DRAWSY_DEEPSEEK_BIN`. DeepSeek Harness is also checked in its standard macOS Applications locations. Detection validates each executable's `--version` response. The published MCP harness checks cover protocol integration; they do not establish OS-specific GUI/runtime compatibility.
 
-Draw mode uses the user's installed external Google Chrome extension when it is available. It does not target Codex's in-app Browser, copy or publish OpenAI's proprietary browser plugin, expose browser credentials, or add a custom drawing tool. The Drawsy-specific policy tells Codex to use the real Drawsy UI and native pointer input for requested gestures—including selecting a Drawsy shape tool and dragging—while keeping Drawsy MCP for explicit structured/data-level work.
+## Native canvas control
 
-The Chrome plugin and its browser extension must already be installed and connected on the device. Each Drawsy page publishes an opaque per-tab marker; before acting, the agent claims a fresh Chrome tab snapshot and verifies that marker, so identical Drawsy tabs cannot be confused. If the marker cannot be verified, Companion fails closed instead of drawing in a guessed tab or substituting MCP objects for a requested gesture. Broad desktop Computer Use remains disabled.
-
-The release bundles Drawsy's `drawsy-browser-use` and `drawsy-teaching-diagrams` skills, including the browser-use tool catalog. Browser-use guidance is attached for Draw mode and explicit current-tab/browser requests; the teaching skill is attached only in Draw mode. They are an explicit allowlist, so adding future skills does not make the model randomly load every bundled skill.
+Harnesses receive Drawsy's native canvas control tools for local visual interaction and structured canvas tools through the session-scoped MCP. These tools are provided by the installed harness and active native profile; Companion does not bundle a separate browser runtime or supply provider credentials.
 
 ## Runtime contract
 
 ```mermaid
 flowchart LR
   Web["Drawsy web client"] -->|"loopback HTTP"| Companion["Drawsy Companion"]
-  Companion -->|"selected folder"| Codex["Codex app-server"]
-  Companion -->|"selected folder"| OpenCode["OpenCode server"]
+  Companion -->|"selected folder as cwd"| Harnesses["Codex · OpenCode · Pi · Oh My Pi · DeepSeek"]
   Companion -->|"stdio + session secret"| MCP["Drawsy MCP"]
   MCP -->|"authenticated loopback calls"| Companion
   Companion --> Folder["Local workspace"]
@@ -68,8 +65,8 @@ flowchart LR
 
 The local path provides:
 
-- installed Codex/OpenCode detection through `GET /v1/engines`;
-- an OS-selected folder as the single workspace boundary for an agent session;
+- installed Codex, OpenCode, Pi, Oh My Pi, and DeepSeek Harness detection through `GET /v1/engines`;
+- an OS-selected folder as each harness session's working directory;
 - surface-scoped canvas, presentation, image, context, and preview operations;
 - local conversation state and session cleanup;
 - a loopback-only bridge at `http://127.0.0.1:3031` by default; and
@@ -90,10 +87,9 @@ Mermaid input is limited to 256 KiB UTF-8 and requires an `operationId`; `replac
 ### Included
 
 - Electron tray/background application;
-- local Codex app-server lifecycle;
-- local OpenCode server lifecycle;
+- local Codex, OpenCode, Pi, Oh My Pi, and DeepSeek Harness lifecycle;
 - installed-engine detection;
-- selected-folder permission and sandbox boundary;
+- selected-folder working-directory selection and harness-native permission behavior;
 - Drawsy bridge protocol and loopback authentication;
 - surface-scoped Drawsy MCP;
 - local canvas context, image transfer, conversation state, and live-preview handoff;
@@ -102,7 +98,7 @@ Mermaid input is limited to 256 KiB UTF-8 and requires an `operationId`; `replac
 
 ### Not included
 
-- Codex or OpenCode binaries, installers, or account authentication;
+- harness binaries, installers, or account authentication;
 - Drawsy web client;
 - hosted workspace copying or remote preview proxying;
 - cloud backend and connector authorization services;
@@ -117,7 +113,7 @@ The detailed boundary is documented in [`FEATURE-BOUNDARY.md`](FEATURE-BOUNDARY.
 - `src/drawsy/bridge.ts` — loopback HTTP bridge, sessions, folder scope, context, previews, and local state.
 - `src/drawsy/mcp.ts` — stdio Drawsy MCP entry point and tool surface.
 - `src/drawsy/codex-app-server.ts` — Codex process and app-server protocol integration.
-- `src/drawsy/opencode-app-server.ts` — OpenCode server integration and ephemeral runtime setup.
+- `src/drawsy/opencode-app-server.ts` — OpenCode server integration using the installed native profile.
 - `src/drawsy/*-binary.ts` — installed-engine resolution and version detection.
 - `src/drawsy/*.test.ts` — protocol, security-boundary, context, and lifecycle tests.
 - `.github/workflows/ci.yml` — static checks and tests on all three desktop operating systems.

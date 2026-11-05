@@ -114,14 +114,14 @@ export const inspectCanvasImage = (buffer: Buffer): ImageMetadata => {
   return metadata;
 };
 
-const workspaceFile = async (workspaceRoot: string, sourcePath: string) => {
+const workspaceFile = async (workspaceRoot: string, sourcePath: string, allowOutsideWorkspace = false) => {
   const root = await realpath(workspaceRoot);
   const candidate = path.isAbsolute(sourcePath)
     ? path.resolve(sourcePath)
     : path.resolve(root, sourcePath);
   const resolved = await realpath(candidate);
   const relative = path.relative(root, resolved);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+  if (!allowOutsideWorkspace && (relative.startsWith("..") || path.isAbsolute(relative))) {
     throw new Error("The image must be inside the current Drawsy workspace.");
   }
   const details = await stat(resolved);
@@ -141,6 +141,7 @@ const workspaceFile = async (workspaceRoot: string, sourcePath: string) => {
 export const createCanvasImageAsset = async (input: {
   workspaceRoot: string;
   sourcePath: string;
+  allowOutsideWorkspace?: boolean;
   x: number;
   y: number;
   maxWidth: number;
@@ -148,7 +149,7 @@ export const createCanvasImageAsset = async (input: {
   elementId?: string;
   frameId?: string | null;
 }) => {
-  const sourcePath = await workspaceFile(input.workspaceRoot, input.sourcePath);
+  const sourcePath = await workspaceFile(input.workspaceRoot, input.sourcePath, input.allowOutsideWorkspace);
   const bytes = await readFile(sourcePath);
   return createCanvasImageAssetFromBytes({
     ...input,

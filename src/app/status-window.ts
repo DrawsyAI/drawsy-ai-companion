@@ -4,15 +4,11 @@ export const DRAWSY_URL = "https://drawsyai.com";
 
 export const windowsStatus = (engines: LocalEngineStatus[], running: boolean) => [
   { id: "companion", text: running ? "Companion running" : "Companion starting", available: running },
-  {
-    id: "codex",
-    text: engines.find((engine) => engine.id === "codex")?.installed
-      ? "Codex available" : "Codex not found",
-    available: Boolean(engines.find((engine) => engine.id === "codex")?.installed)
-  },
-  // Detection alone does not make OpenCode usable: its session sandbox currently
-  // rejects Windows in OpenCodeSession.initialize().
-  { id: "opencode", text: "OpenCode unavailable on Windows", available: false }
+  ...engines.map((engine) => ({
+    id: engine.id,
+    text: engine.installed ? `${engine.name} available${engine.version ? ` · v${engine.version}` : ""}` : `${engine.name} not found`,
+    available: engine.installed
+  }))
 ];
 
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (character) =>
@@ -66,7 +62,10 @@ export const createWindowsStatusPage = (version: string, illustration: string) =
     <div class="runtime" aria-live="polite" aria-label="Local runtime status">
       <span class="status" id="companion">Companion starting</span>
       <span class="status" id="codex">Checking Codex</span>
-      <span class="status" id="opencode">OpenCode unavailable on Windows</span>
+      <span class="status" id="opencode">Checking OpenCode</span>
+      <span class="status" id="pi">Checking Pi</span>
+      <span class="status" id="omp">Checking Oh My Pi</span>
+      <span class="status" id="deepseek">Checking DeepSeek</span>
     </div>
   </main>
   <footer><span>Stays running when you close this window.</span><span>v${escapeHtml(version)}</span></footer>

@@ -77,7 +77,7 @@ drawsy-companion stop
 npm uninstall --global @drawsy/companion
 ```
 
-Neither install route installs, updates, or signs in to Codex or OpenCode. Keep using the installation and login flow you already have for those tools.
+Neither install route installs, updates, or signs in to Codex, OpenCode, Pi, Oh My Pi, or DeepSeek Harness. Keep using the installation and login flow you already have for those tools.
 
 ## Release sources
 

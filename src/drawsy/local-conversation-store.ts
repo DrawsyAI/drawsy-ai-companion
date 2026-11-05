@@ -18,6 +18,9 @@ export type LocalConversationPreferences = {
   engine: AgentEngine;
   codex: LocalAgentPreference;
   opencode: LocalAgentPreference;
+  pi: LocalAgentPreference;
+  omp: LocalAgentPreference;
+  deepseek: LocalAgentPreference;
   updatedAt: number;
 };
 
@@ -55,6 +58,9 @@ export const defaultConversationPreferences = (): LocalConversationPreferences =
   engine: "codex",
   codex: emptyPreference(),
   opencode: emptyPreference(),
+  pi: emptyPreference(),
+  omp: emptyPreference(),
+  deepseek: emptyPreference(),
   updatedAt: 0
 });
 
@@ -76,7 +82,7 @@ const localStateDirectory = () => {
 };
 
 const isAgentEngine = (value: unknown): value is AgentEngine =>
-  value === "codex" || value === "opencode";
+  value === "codex" || value === "opencode" || value === "pi" || value === "omp" || value === "deepseek";
 
 const isAccessMode = (value: unknown): value is AgentAccessMode =>
   value === "workspace" || value === "readOnly";
@@ -124,13 +130,15 @@ const readConversation = (value: unknown): LocalConversation | null => {
 };
 
 export class LocalConversationStore {
-  readonly stateDirectory = localStateDirectory();
-  readonly statePath = path.join(this.stateDirectory, "ai-conversations.json");
+  readonly stateDirectory: string;
+  readonly statePath: string;
   private data: StoreData = initialStore();
   private readonly loaded: Promise<void>;
   private writeQueue: Promise<void> = Promise.resolve();
 
-  constructor() {
+  constructor(options: { stateDirectory?: string } = {}) {
+    this.stateDirectory = options.stateDirectory || localStateDirectory();
+    this.statePath = path.join(this.stateDirectory, "ai-conversations.json");
     this.loaded = this.load();
   }
 
@@ -146,6 +154,9 @@ export class LocalConversationStore {
         engine: isAgentEngine(preferencesRecord.engine) ? preferencesRecord.engine : "codex",
         codex: readPreference(preferencesRecord.codex),
         opencode: readPreference(preferencesRecord.opencode),
+        pi: readPreference(preferencesRecord.pi),
+        omp: readPreference(preferencesRecord.omp),
+        deepseek: readPreference(preferencesRecord.deepseek),
         updatedAt: typeof preferencesRecord.updatedAt === "number" ? preferencesRecord.updatedAt : 0
       } satisfies LocalConversationPreferences;
       const conversations = Array.isArray(record.conversations)
@@ -288,6 +299,11 @@ export class LocalConversationStore {
     engine: AgentEngine,
     nativeSessionId: string | null
   ) {
+    if (engine === "pi" || engine === "omp" || engine === "deepseek") {
+      const conversation = await this.get(id);
+      if (!conversation) throw new Error("Conversation does not exist locally.");
+      return conversation;
+    }
     return this.mutate(() => {
       const conversation = this.data.conversations.find((item) => item.id === id);
       if (!conversation) throw new Error("Conversation does not exist locally.");
@@ -309,6 +325,9 @@ export class LocalConversationStore {
         engine: input.engine,
         codex: readPreference(input.codex),
         opencode: readPreference(input.opencode),
+        pi: readPreference(input.pi),
+        omp: readPreference(input.omp),
+        deepseek: readPreference(input.deepseek),
         updatedAt: Date.now()
       };
       return structuredClone(this.data.preferences);

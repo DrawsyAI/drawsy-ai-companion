@@ -4,10 +4,9 @@ The private `drawsy-ai-mcp` repository remains the historical implementation rec
 
 ## Included here
 
-- local Codex app-server lifecycle;
-- local OpenCode server lifecycle;
+- local Codex, OpenCode, Pi, Oh My Pi, and DeepSeek Harness lifecycle;
 - installed-engine detection;
-- selected-folder permission and sandbox boundary;
+- selected-folder working-directory selection with each harness's native permission model;
 - Drawsy bridge protocol and loopback authentication;
 - surface-scoped Drawsy MCP;
 - canvas, presentation, image, context, and local preview handoff;
