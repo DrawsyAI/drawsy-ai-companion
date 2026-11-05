@@ -26,6 +26,11 @@ import {
   isCodexThreadResumeUnsupportedError
 } from "./codex-app-server.js";
 import { OpenCodeAppServer } from "./opencode-app-server.js";
+import { PiAppServer } from "./pi-app-server.js";
+import { DeepSeekAppServer } from "./deepseek-app-server.js";
+import { resolvePiBinary } from "./pi-binary.js";
+import { resolveOmpBinary } from "./omp-binary.js";
+import { resolveDeepSeekBinary } from "./deepseek-binary.js";
 import {
   LocalConversationStore,
   type LocalConversationPreferences
@@ -50,6 +55,7 @@ import {
   parseCanvasContextReference,
   parseCanvasContextRequest,
   parseCanvasConnectorRequest,
+  parseCanvasControlRequest,
   parseCanvasDiagramCodeRequest,
   parseCanvasLabelRequest,
   parseCanvasLibraryRequest,
@@ -58,8 +64,6 @@ import {
   parseCanvasOperations,
   parseAgentConnectorTurn,
   parseAgentResourceTurn,
-  parseDrawsyTabId,
-  parseDrawsyTabUrl,
   parseGenerationMode,
   isConnectorCapability,
   type AgentConnectorTurn,
@@ -71,6 +75,7 @@ import {
   type CanvasContextReference,
   type CanvasContextRequest,
   type CanvasConnectorRequest,
+  type CanvasControlRequest,
   type CanvasDiagramCodeRequest,
   type CanvasLabelRequest,
   type CanvasLibraryRequest,
@@ -187,10 +192,11 @@ type Session = {
   activeResourceTurn: AgentResourceTurn | null;
   generationMode: GenerationMode;
   activeGenerationMode: GenerationMode | null;
+  activeDrawMode: boolean;
   turnStartPending: boolean;
   connectorBackendUrl: URL | null;
   engine: AgentEngine;
-  agent: CodexAppServer | OpenCodeAppServer;
+  agent: CodexAppServer | OpenCodeAppServer | PiAppServer | DeepSeekAppServer;
   previewPort: number | null;
   touchedAt: number;
 };
@@ -202,6 +208,9 @@ class BridgeRequestError extends Error {
 }
 
 const assertCanvasActionAllowed = (session: Session, action: string) => {
+  if (session.activeDrawMode && !["read", "capabilities", "inspect", "capture", "control"].includes(action)) {
+    throw new BridgeRequestError(403, "draw_mode_control_required", "Draw mode only allows direct canvas controls. Switch to Simple or Fast for structured canvas edits.");
+  }
   if (
     session.generationMode === "fast" &&
     ![
@@ -345,9 +354,9 @@ const parseLocalPreferences = (
 ): Omit<LocalConversationPreferences, "updatedAt"> => {
   if (
     Object.keys(value).some(
-      (key) => key !== "engine" && key !== "codex" && key !== "opencode"
+      (key) => key !== "engine" && key !== "codex" && key !== "opencode" && key !== "pi" && key !== "omp" && key !== "deepseek"
     ) ||
-    (value.engine !== "codex" && value.engine !== "opencode")
+    (value.engine !== "codex" && value.engine !== "opencode" && value.engine !== "pi" && value.engine !== "omp" && value.engine !== "deepseek")
   ) {
     throw new BridgeRequestError(
       400,
@@ -420,7 +429,10 @@ const parseLocalPreferences = (
   return {
     engine: value.engine,
     codex: parsePreference(value.codex),
-    opencode: parsePreference(value.opencode)
+    opencode: parsePreference(value.opencode),
+    pi: parsePreference(value.pi ?? {}),
+    omp: parsePreference(value.omp ?? {}),
+    deepseek: parsePreference(value.deepseek ?? {})
   };
 };
 
@@ -493,6 +505,7 @@ export const createDrawsyBridge = (
       session.activeConnectorTurn = null;
       session.activeResourceTurn = null;
       session.activeGenerationMode = null;
+      session.activeDrawMode = false;
     }
     const line = `${JSON.stringify(event)}\n`;
     for (const client of session.clients) {
@@ -624,14 +637,6 @@ export const createDrawsyBridge = (
         );
       }
       return selected;
-    }
-
-    if (input.surfaceKind !== "canvas" && input.surfaceKind !== "presentation") {
-      throw new BridgeRequestError(
-        400,
-        "folder_required",
-        "Choose a folder for this Drawsy surface."
-      );
     }
 
     const memoryKey = input.canvasId;
@@ -1219,7 +1224,8 @@ export const createDrawsyBridge = (
       | "capture"
       | "replaceImage"
       | "preview"
-      | "library",
+      | "library"
+      | "control",
     options: {
       operations?: CanvasOperations;
       connectorRequest?: CanvasConnectorRequest;
@@ -1229,6 +1235,7 @@ export const createDrawsyBridge = (
       imageReplacement?: CanvasImageReplacement;
       previewRequest?: LivePreviewRequest;
       libraryRequest?: CanvasLibraryRequest;
+      controlRequest?: CanvasControlRequest;
     } = {}
   ) => {
     assertCanvasActionAllowed(session, action);
@@ -1327,6 +1334,7 @@ export const createDrawsyBridge = (
     }
     const asset = await createCanvasImageAsset({
       workspaceRoot: session.folder.path,
+      allowOutsideWorkspace: true,
       sourcePath,
       x: 0,
       y: 0,
@@ -1411,7 +1419,7 @@ export const createDrawsyBridge = (
       }
 
       const internalCanvas = url.pathname.match(
-        /^\/internal\/sessions\/([^/]+)\/canvas\/(read|capabilities|connector|label|diagram|apply|inspect|image|context|replace-image|preview|library)$/
+        /^\/internal\/sessions\/([^/]+)\/canvas\/(read|capabilities|connector|label|diagram|apply|inspect|image|context|replace-image|preview|library|control)$/
       );
       if (request.method === "POST" && internalCanvas) {
         const session = internalSession(
@@ -1432,7 +1440,8 @@ export const createDrawsyBridge = (
           | "context"
           | "replace-image"
           | "preview"
-          | "library";
+          | "library"
+          | "control";
         const body = await readJson(request);
         assertCanvasActionAllowed(
           session,
@@ -1442,6 +1451,16 @@ export const createDrawsyBridge = (
           action === "preview" ? parseLivePreviewRequest(body) : null;
         const parsedDiagram =
           action === "diagram" ? parseCanvasDiagramCodeRequest(body) : null;
+        if (
+          parsedDiagram?.presentationFrame &&
+          session.surfaceKind !== "presentation"
+        ) {
+          throw new BridgeRequestError(
+            400,
+            "presentation_required",
+            "Slide framing is only available on a presentation."
+          );
+        }
         if (parsedPreview && session.previewPort !== null) {
           const requestedPort = Number(new URL(parsedPreview.url).port);
           if (requestedPort !== session.previewPort) {
@@ -1464,6 +1483,10 @@ export const createDrawsyBridge = (
             : action === "library"
             ? await requestCanvas(session, "library", {
                 libraryRequest: parseCanvasLibraryRequest(body)
+              })
+            : action === "control"
+            ? await requestCanvas(session, "control", {
+                controlRequest: parseCanvasControlRequest(body)
               })
             : action === "diagram"
             ? await requestCanvas(session, "diagram", {
@@ -1613,6 +1636,7 @@ export const createDrawsyBridge = (
         json(response, 200, {
           engines: readLocalEngineStatus(),
           generationModes: ["draw", "fast"],
+          nativeCanvasControl: true,
           library: true
         });
         return;
@@ -1779,7 +1803,7 @@ export const createDrawsyBridge = (
           return;
         }
         const validatedSurfaceKind = surfaceKind as DrawsySurfaceKind;
-        if (engine !== "codex" && engine !== "opencode") {
+        if (engine !== "codex" && engine !== "opencode" && engine !== "pi" && engine !== "omp" && engine !== "deepseek") {
           json(response, 400, {
             error: {
               code: "engine_invalid",
@@ -1881,7 +1905,7 @@ export const createDrawsyBridge = (
           let hadNativeSession = Boolean(
             engine === "codex"
               ? localConversation.codexThreadId
-              : localConversation.openCodeSessionId
+              : engine === "opencode" ? localConversation.openCodeSessionId : null
           );
           const existingConversationSession = conversationId
             ? conversationSessions.get(conversationId)
@@ -1983,7 +2007,7 @@ export const createDrawsyBridge = (
             request.headers.origin
           );
           let sessionRef: Session | null = null;
-          let agent: CodexAppServer | OpenCodeAppServer;
+          let agent: CodexAppServer | OpenCodeAppServer | PiAppServer | DeepSeekAppServer;
           try {
             await prepareContextStore(folder.path);
             const agentOptions = {
@@ -1996,10 +2020,18 @@ export const createDrawsyBridge = (
               workspaceMode: folder.userSelected
                 ? ("selected" as const)
                 : ("private" as const),
-              isolateProcessGroup: false,
+              isolateProcessGroup: true,
               previewPort: null
             };
-            if (engine === "opencode") {
+            if (engine === "pi" || engine === "omp") {
+              const runtimePath = path.join(localConversations.stateDirectory, engine, conversationId);
+              agent = await PiAppServer.start(folder.path, { ...agentOptions, engine, piBinary: engine === "omp" ? resolveOmpBinary() : resolvePiBinary(), runtimePath, sessionDir: path.join(runtimePath, "sessions"), nativeSessionId: conversationId }, (event) => sessionRef && emit(sessionRef, event));
+              hadNativeSession = agent.resumed;
+            } else if (engine === "deepseek") {
+              const runtimePath = path.join(localConversations.stateDirectory, "deepseek", conversationId);
+              agent = await DeepSeekAppServer.start(folder.path, { ...agentOptions, deepseekBinary: resolveDeepSeekBinary(), runtimePath, nativeSessionId: conversationId }, (event) => sessionRef && emit(sessionRef, event));
+              hadNativeSession = agent.resumed;
+            } else if (engine === "opencode") {
               agent = await OpenCodeAppServer.start(
                 folder.path,
                 {
@@ -2096,6 +2128,7 @@ export const createDrawsyBridge = (
             activeResourceTurn: null,
             generationMode: "draw",
             activeGenerationMode: null,
+            activeDrawMode: false,
             turnStartPending: false,
             connectorBackendUrl: connectorBackend.url,
             engine,
@@ -2236,26 +2269,10 @@ export const createDrawsyBridge = (
             "Fast Mode requires an attached Drawsy canvas."
           );
         }
-        const drawMode = body.drawMode === true && generationMode === "draw";
-        let drawsyTabId: string | null;
-        let drawsyTabUrl: string | null;
-        try {
-          drawsyTabId = parseDrawsyTabId(body.drawsyTabId);
-          drawsyTabUrl = parseDrawsyTabUrl(body.drawsyTabUrl);
-        } catch {
-          throw new BridgeRequestError(
-            400,
-            "draw_target_invalid",
-            "Draw mode received an invalid calling-tab identity. Refresh this tab and retry."
-          );
+        if (body.drawMode === true && generationMode === "fast") {
+          throw new BridgeRequestError(400, "draw_fast_conflict", "Draw and Fast modes cannot be active at the same time.");
         }
-        if (drawMode && (!drawsyTabId || !drawsyTabUrl)) {
-          throw new BridgeRequestError(
-            400,
-            "draw_target_missing",
-            "Draw mode needs the calling Drawsy tab identity. Refresh this tab and retry."
-          );
-        }
+        const drawMode = body.drawMode === true;
         const contexts = resolveContextCaptures(
           session,
           parseContextReferences(body.contexts)
@@ -2268,6 +2285,7 @@ export const createDrawsyBridge = (
           );
         }
         session.generationMode = generationMode;
+        session.activeDrawMode = drawMode;
         session.activeConnectorTurn = connectorTurn;
         session.activeResourceTurn = resourceTurn;
         session.activeGenerationMode = generationMode;
@@ -2283,8 +2301,8 @@ export const createDrawsyBridge = (
             connectorTurn?.sources || [],
             resourceTurn?.resources || [],
             drawMode,
-            drawsyTabId,
-            drawsyTabUrl,
+            null,
+            null,
             generationMode
           );
           if (session.conversationId) {
@@ -2302,6 +2320,7 @@ export const createDrawsyBridge = (
           session.activeConnectorTurn = null;
           session.activeResourceTurn = null;
           session.activeGenerationMode = null;
+          session.activeDrawMode = false;
           throw error;
         } finally {
           session.turnStartPending = false;
