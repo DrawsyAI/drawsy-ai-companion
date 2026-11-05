@@ -231,6 +231,7 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       "attach_live_preview",
       "call_connected_meeting_tool",
       "capture_canvas_context",
+      "control_canvas",
       "create_kanban_card",
       "create_kanban_checklist_item",
       "create_or_update_connector",
@@ -328,6 +329,22 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       containerId: "node-1", text: "A label"
     });
     assert.match(JSON.stringify(label.content), /text-1/);
+    appliedBody = "";
+    const control = await client.callTool({
+      name: "control_canvas",
+      arguments: { action: "drag", tool: "rectangle", start: [10, 20], end: [100, 80] }
+    });
+    assert.equal(control.isError, undefined);
+    assert.deepEqual(JSON.parse(appliedBody), {
+      action: "drag", tool: "rectangle", start: [10, 20], end: [100, 80]
+    });
+    appliedBody = "";
+    const invalidControl = await client.callTool({
+      name: "control_canvas",
+      arguments: { action: "drag", tool: "rectangle", start: [10, 20], end: [10, 80] }
+    });
+    assert.equal(invalidControl.isError, true);
+    assert.equal(appliedBody, "");
     const layout = await client.callTool({
       name: "inspect_current_canvas_layout",
       arguments: {}
@@ -559,7 +576,7 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       }
     ]);
 
-    const listSurfaceTools = async (surfaceKind: "kanban" | "neutral") => {
+    const listSurfaceTools = async (surfaceKind: "kanban" | "neutral" | "presentation" | "canvas") => {
       const surfaceTransport = new StdioClientTransport({
         command: process.execPath,
         args: [mcpPath],
@@ -579,28 +596,36 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       });
       try {
         await surfaceClient.connect(surfaceTransport);
-        return (await surfaceClient.listTools()).tools.map((tool) => tool.name);
+        return (await surfaceClient.listTools()).tools;
       } finally {
         await surfaceClient.close();
       }
     };
     const neutralTools = await listSurfaceTools("neutral");
-    assert.equal(neutralTools.includes("read_current_canvas"), false);
-    assert.equal(neutralTools.includes("read_current_kanban_board"), false);
+    assert.equal(neutralTools.some((tool) => tool.name === "read_current_canvas"), false);
+    assert.equal(neutralTools.some((tool) => tool.name === "read_current_kanban_board"), false);
     assert.equal(
-      neutralTools.includes("link_current_canvas_to_kanban_card"),
+      neutralTools.some((tool) => tool.name === "link_current_canvas_to_kanban_card"),
       false
     );
-    assert.equal(neutralTools.includes("list_kanban_boards"), true);
-    assert.equal(neutralTools.includes("list_jira_connections"), true);
+    assert.equal(neutralTools.some((tool) => tool.name === "list_kanban_boards"), true);
+    assert.equal(neutralTools.some((tool) => tool.name === "list_jira_connections"), true);
 
     const kanbanTools = await listSurfaceTools("kanban");
-    assert.equal(kanbanTools.includes("read_current_kanban_board"), true);
-    assert.equal(kanbanTools.includes("read_current_canvas"), false);
+    assert.equal(kanbanTools.some((tool) => tool.name === "read_current_kanban_board"), true);
+    assert.equal(kanbanTools.some((tool) => tool.name === "read_current_canvas"), false);
     assert.equal(
-      kanbanTools.includes("link_current_canvas_to_kanban_card"),
+      kanbanTools.some((tool) => tool.name === "link_current_canvas_to_kanban_card"),
       false
     );
+    const presentationTools = await listSurfaceTools("presentation");
+    const presentationDiagram = presentationTools.find((tool) => tool.name === "render_diagram_code");
+    assert.ok(presentationDiagram);
+    assert.ok(presentationDiagram.inputSchema.properties?.presentationFrame);
+    const canvasTools = await listSurfaceTools("canvas");
+    const canvasDiagram = canvasTools.find((tool) => tool.name === "render_diagram_code");
+    assert.ok(canvasDiagram);
+    assert.equal(Object.hasOwn(canvasDiagram.inputSchema.properties || {}, "presentationFrame"), false);
   } finally {
     await client.close();
     await new Promise<void>((resolve, reject) =>

@@ -8,6 +8,7 @@ import {
   addCanvasRenderSemantics,
   MAX_BODY_BYTES,
   MAX_DIAGRAM_SOURCE_BYTES,
+  parseCanvasControlRequest,
   parseCanvasDiagramCodeRequest,
   parseCanvasOperations,
   parseCanvasLibraryRequest,
@@ -56,7 +57,8 @@ const callBridge = async (
     | "context"
     | "replace-image"
     | "preview"
-    | "library",
+    | "library"
+    | "control",
   body: unknown = {}
 ) => {
   const response = await fetch(
@@ -291,6 +293,172 @@ if (surfaceKind === "canvas" || surfaceKind === "presentation") {
   );
 
   server.registerTool(
+    "control_canvas",
+    {
+      description:
+        "Use this for every Draw mode canvas change. It drives Drawsy's own canvas pointer handlers, so click and drag gestures draw, select, move, resize, erase, pan, and fill using the active tool. Read read_current_canvas first; use its viewport scene coordinates. set_tool selects a native canvas tool, set_style changes current drawing settings or the selected elements, and type_text places editable text with the Text tool. gesture sends a curved path; drag sends one straight path; draw_freehand selects Pencil for an organic stroke. A pointer action is one press-move-release sequence and is visible while it runs. This controls only the attached Drawsy canvas; it does not access browser tabs or other pages. Image insertion needs an image asset and is not available through this pointer tool.",
+      inputSchema: z.discriminatedUnion("action", [
+        z.object({
+          action: z.literal("click"),
+          x: z.number().finite().min(-1_000_000).max(1_000_000),
+          y: z.number().finite().min(-1_000_000).max(1_000_000)
+        }).strict(),
+        z.object({
+          action: z.literal("select"),
+          elementIds: z.array(z.string().trim().min(1).max(128)).min(1).max(100)
+        }).strict().refine(
+          ({ elementIds }) => new Set(elementIds).size === elementIds.length,
+          { path: ["elementIds"], message: "Element IDs must be unique." }
+        ),
+        z.object({ action: z.literal("clear_selection") }).strict(),
+        z.object({
+          action: z.literal("set_tool"),
+          tool: z.enum([
+            "selection",
+            "lasso",
+            "rectangle",
+            "ellipse",
+            "diamond",
+            "line",
+            "arrow",
+            "freedraw",
+            "text",
+            "eraser",
+            "hand",
+            "frame",
+            "magicframe",
+            "embeddable",
+            "laser",
+            "bucketfill"
+          ])
+        }).strict(),
+        z.object({
+          action: z.literal("drag"),
+          tool: z.enum([
+            "selection",
+            "lasso",
+            "rectangle",
+            "ellipse",
+            "diamond",
+            "line",
+            "arrow",
+            "freedraw",
+            "text",
+            "eraser",
+            "hand",
+            "frame",
+            "magicframe",
+            "embeddable",
+            "laser",
+            "bucketfill"
+          ]).optional(),
+          start: z.tuple([
+            z.number().finite().min(-1_000_000).max(1_000_000),
+            z.number().finite().min(-1_000_000).max(1_000_000)
+          ]),
+          end: z.tuple([
+            z.number().finite().min(-1_000_000).max(1_000_000),
+            z.number().finite().min(-1_000_000).max(1_000_000)
+          ])
+        }).strict().refine(
+          ({ start, end, tool }) =>
+            Math.max(Math.abs(start[0] - end[0]), Math.abs(start[1] - end[1])) <=
+              1_000_000 &&
+            (start[0] !== end[0] || start[1] !== end[1]) &&
+            (!(tool === "rectangle" || tool === "ellipse" || tool === "diamond" || tool === "frame" || tool === "magicframe" || tool === "embeddable") ||
+              (start[0] !== end[0] && start[1] !== end[1])),
+          {
+            message:
+              "A line or arrow needs a nonzero length; closed shapes need both width and height, up to 1,000,000 scene units."
+          }
+        ),
+        z.object({
+          action: z.literal("draw_freehand"),
+          points: z.array(
+            z.array(z.number().finite().min(-1_000_000).max(1_000_000)).length(2)
+          ).min(2).max(512)
+        }).strict(),
+        z.object({
+          action: z.literal("gesture"),
+          points: z.array(
+            z.array(z.number().finite().min(-1_000_000).max(1_000_000)).length(2)
+          ).min(2).max(512),
+          tool: z.enum([
+            "selection",
+            "lasso",
+            "rectangle",
+            "ellipse",
+            "diamond",
+            "line",
+            "arrow",
+            "freedraw",
+            "text",
+            "eraser",
+            "hand",
+            "frame",
+            "magicframe",
+            "embeddable",
+            "laser",
+            "bucketfill"
+          ]).optional()
+        }).strict(),
+        z.object({
+          action: z.literal("type_text"),
+          x: z.number().finite().min(-1_000_000).max(1_000_000),
+          y: z.number().finite().min(-1_000_000).max(1_000_000),
+          text: z.string().trim().min(1).max(4_000)
+        }).strict(),
+        z.object({
+          action: z.literal("set_style"),
+          target: z.enum(["current", "selection"]).optional(),
+          elementIds: z.array(z.string().trim().min(1).max(128)).min(1).max(100).optional(),
+          style: z.object({
+            strokeColor: z.string().regex(/^#(?:[\da-fA-F]{3,4}|[\da-fA-F]{6}|[\da-fA-F]{8})$|^transparent$/),
+            backgroundColor: z.string().regex(/^#(?:[\da-fA-F]{3,4}|[\da-fA-F]{6}|[\da-fA-F]{8})$|^transparent$/),
+            fillStyle: z.enum(["hachure", "cross-hatch", "solid", "zigzag", "dots"]),
+            dimensionality: z.enum(["2d", "3d"]),
+            strokeWidth: z.number().finite().min(1).max(24),
+            strokeStyle: z.enum(["solid", "dashed", "dotted"]),
+            roughness: z.number().finite().min(0).max(3),
+            opacity: z.number().finite().min(0).max(100),
+            fontFamily: z.number().int().refine((value) => [1, 2, 3, 5, 6, 7, 8, 9, 10].includes(value)),
+            fontSize: z.number().finite().min(1).max(512),
+            textAlign: z.enum(["left", "center", "right"])
+          }).partial().strict().refine((style) => Object.keys(style).length > 0)
+        }).strict().refine(
+          ({ target, elementIds }) => target !== "current" || elementIds === undefined,
+          { message: "elementIds can only be used when target is selection." }
+        )
+      ]),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        openWorldHint: false
+      }
+    },
+    async (input) => {
+      try {
+        return {
+          content: [{
+            type: "text",
+            text: await callBridge("control", parseCanvasControlRequest(input))
+          }]
+        };
+      } catch (error) {
+        return {
+          isError: true,
+          content: [{
+            type: "text",
+            text: error instanceof Error
+              ? error.message
+              : "The Drawsy canvas could not be controlled."
+          }]
+        };
+      }
+    }
+  );
+
+  server.registerTool(
     "create_or_update_connector",
     {
       description:
@@ -352,7 +520,7 @@ if (surfaceKind === "canvas" || surfaceKind === "presentation") {
     "render_diagram_code",
     {
       description:
-        "Render semantic Mermaid source on the attached Drawsy canvas through its typed diagram converter. This is Fast Mode's code conversion operation and is also available to other MCP clients. Read the canvas and `get_canvas_capabilities` first. Use its `diagramCode` catalog as the converter support authority. Choose syntax and diagram family from the user's intent; keep source concise, preserve canvas context, and let the converter handle placement. The result reports outputKind, diagramType, elementCount, inserted elementIds, and bounds. Use replaceOperationId only to replace an earlier converter-created diagram group after inspection; do not target other canvas elements.",
+        "Render semantic Mermaid source on the attached Drawsy canvas through its typed diagram converter. This is Fast Mode's code conversion operation and is also available to other MCP clients. Read the canvas and `get_canvas_capabilities` first. Use its `diagramCode` catalog as the converter support authority. Choose syntax and diagram family from the user's intent; keep source concise and preserve canvas context. In a presentation, set presentationFrame to reuse a relevant slide or create a new slide only when the requested work belongs in a slide; omit it for independent canvas content. The result reports outputKind, diagramType, elementCount, inserted elementIds, and bounds. Use replaceOperationId only to replace an earlier converter-created diagram group after inspection; do not target other canvas elements.",
       inputSchema: z
         .object({
           format: z.literal("mermaid"),
@@ -361,7 +529,29 @@ if (surfaceKind === "canvas" || surfaceKind === "presentation") {
           replaceOperationId: z
             .string()
             .regex(/^[A-Za-z0-9_-]{1,128}$/)
-            .optional()
+            .optional(),
+          ...(surfaceKind === "presentation"
+            ? {
+                presentationFrame: z
+                  .discriminatedUnion("mode", [
+                    z
+                      .object({
+                        mode: z.literal("existing"),
+                        frameId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
+                      })
+                      .strict(),
+                    z
+                      .object({
+                        mode: z.literal("new"),
+                        width: z.number().finite().min(100).max(100_000),
+                        height: z.number().finite().min(100).max(100_000),
+                        name: z.string().trim().min(1).max(100).optional()
+                      })
+                      .strict()
+                  ])
+                  .optional()
+              }
+            : {})
         })
         .refine(
           ({ operationId, replaceOperationId }) =>
