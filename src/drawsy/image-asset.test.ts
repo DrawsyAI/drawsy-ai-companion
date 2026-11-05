@@ -1,7 +1,26 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
-import { inspectCanvasImage } from "./image-asset.js";
+import { createCanvasImageAsset, inspectCanvasImage } from "./image-asset.js";
+
+test("local native image imports can use files outside cwd while scoped imports retain their boundary", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "drawsy-native-image-"));
+  try {
+    const workspaceRoot = path.join(root, "workspace");
+    await mkdir(workspaceRoot);
+    const sourcePath = path.join(root, "generated.png");
+    await writeFile(sourcePath, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64"));
+    const input = { workspaceRoot, sourcePath, x: 0, y: 0, maxWidth: 100 };
+    await assert.rejects(createCanvasImageAsset(input), /inside the current Drawsy workspace/);
+    const asset = await createCanvasImageAsset({ ...input, allowOutsideWorkspace: true });
+    assert.match(asset.file.dataURL, /^data:image\/png;base64,/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("image inspection detects supported raster formats and dimensions", () => {
   const png = Buffer.alloc(24);
