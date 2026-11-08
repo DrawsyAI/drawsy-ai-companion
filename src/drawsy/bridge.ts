@@ -1,3 +1,7 @@
+import { readCodexPluginDetails } from "./codex-marketplace.js";
+import { readMarketplace, mutateMarketplace } from "./marketplace.js";
+import { readCodexProviderLimits } from "./codex-provider-limits.js";
+import { readOmpProviderLimits } from "./omp-provider-limits.js";
 import {
   createHash,
   randomBytes,
@@ -32,6 +36,7 @@ import { resolvePiBinary } from "./pi-binary.js";
 import { resolveOmpBinary } from "./omp-binary.js";
 import { resolveDeepSeekBinary } from "./deepseek-binary.js";
 import {
+  isAgentEngine,
   LocalConversationStore,
   type LocalConversationPreferences
 } from "./local-conversation-store.js";
@@ -497,6 +502,23 @@ export const createDrawsyBridge = (
   const conversationStartLocks = new Map<string, Promise<void>>();
   const localConversations = new LocalConversationStore();
   const emit = (session: Session, event: BridgeEvent) => {
+    if (event.type === "usage.recorded") {
+      if (session.conversationId) {
+        const agent = session.agent.metadata;
+        const model = event.data.model ?? agent.model;
+        void localConversations
+          .recordUsage(session.conversationId, {
+            ...event.data,
+            model,
+            modelProvider: event.data.modelProvider ??
+              (model === agent.model ? agent.modelProvider : undefined)
+          })
+          .catch((error) =>
+            console.warn("Drawsy local harness usage could not be saved.", error)
+          );
+      }
+      return;
+    }
     session.touchedAt = Date.now();
     if (
       event.type === "error" ||
@@ -1632,6 +1654,85 @@ export const createDrawsyBridge = (
 
       if (!requirePublicOrigin(request, response)) return;
 
+      if (request.method === "GET" && url.pathname === "/v1/provider-limits") {
+        const engine = url.searchParams.get("engine");
+        if (!isAgentEngine(engine)) {
+          json(response, 400, {
+            error: { code: "engine_invalid", message: "Choose a valid harness." }
+          });
+          return;
+        }
+        response.setHeader("cache-control", "no-store");
+        const limits = engine === "codex"
+          ? await readCodexProviderLimits()
+          : engine === "omp"
+            ? await readOmpProviderLimits()
+            : { status: "unavailable" };
+        json(response, 200, limits);
+        return;
+      }
+
+      if (url.pathname === "/v1/marketplace" &&
+          (request.method === "GET" || request.method === "POST")) {
+        const engine = url.searchParams.get("engine");
+        if (!isAgentEngine(engine)) {
+          json(response, 400, {
+            error: { code: "engine_invalid", message: "Choose a valid harness." }
+          });
+          return;
+        }
+        response.setHeader("cache-control", "no-store");
+        if (request.method === "GET") {
+          json(response, 200, await readMarketplace(engine));
+          return;
+        }
+        const body = await readJson(request);
+        if (typeof body.action !== "string" ||
+            (body.id !== undefined && typeof body.id !== "string") ||
+            (body.source !== undefined && typeof body.source !== "string") ||
+            (body.name !== undefined && typeof body.name !== "string")) {
+          json(response, 400, {
+            error: { code: "marketplace_invalid", message: "Choose a valid marketplace action." }
+          });
+          return;
+        }
+        try {
+          await mutateMarketplace(engine, {
+            action: body.action,
+            id: body.id as string | undefined,
+            source: body.source as string | undefined,
+            name: body.name as string | undefined
+          });
+          json(response, 200, { ok: true });
+        } catch (error) {
+          json(response, 400, {
+            error: { code: "marketplace_failed",
+              message: error instanceof Error ? error.message : "The harness could not apply this change." }
+          });
+        }
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/v1/marketplace/plugin") {
+        response.setHeader("cache-control", "no-store");
+        const id = url.searchParams.get("id");
+        if (url.searchParams.get("engine") !== "codex" || !id || id.length > 1024) {
+          json(response, 400, {
+            error: { code: "marketplace_invalid", message: "Choose an installed Codex plugin." }
+          });
+          return;
+        }
+        try {
+          json(response, 200, await readCodexPluginDetails(id));
+        } catch (error) {
+          json(response, 400, {
+            error: { code: "plugin_details_unavailable",
+              message: error instanceof Error ? error.message : "Plugin connections could not be checked." }
+          });
+        }
+        return;
+      }
+
       if (request.method === "GET" && url.pathname === "/v1/engines") {
         json(response, 200, {
           engines: readLocalEngineStatus(),
@@ -1654,6 +1755,22 @@ export const createDrawsyBridge = (
           parseLocalPreferences(await readJson(request))
         );
         json(response, 200, { preferences });
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/v1/harness-activity") {
+        const engine = url.searchParams.get("engine");
+        const page = Number(url.searchParams.get("page") ?? "1");
+        const model = url.searchParams.get("model");
+        if (!isAgentEngine(engine) || !Number.isSafeInteger(page) || page < 1) {
+          json(response, 400, {
+            error: { code: "activity_invalid", message: "Choose a valid harness and page." }
+          });
+          return;
+        }
+        json(
+          response, 200, await localConversations.getHarnessActivity(engine, page, model)
+        );
         return;
       }
 
@@ -2307,7 +2424,7 @@ export const createDrawsyBridge = (
           );
           if (session.conversationId) {
             await localConversations
-              .recordUserMessage(session.conversationId, message)
+              .recordUserMessage(session.conversationId, message, session.agent.metadata)
               .catch((error) =>
                 console.warn(
                   "Drawsy local conversation title could not be saved.",
@@ -2359,7 +2476,7 @@ export const createDrawsyBridge = (
         await session.agent.steerTurn(message);
         if (session.conversationId) {
           await localConversations
-            .recordUserMessage(session.conversationId, message)
+            .recordUserMessage(session.conversationId, message, session.agent.metadata)
             .catch((error) =>
               console.warn(
                 "Drawsy local conversation title could not be saved.",

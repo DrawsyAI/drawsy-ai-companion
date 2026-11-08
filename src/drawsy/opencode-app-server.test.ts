@@ -555,11 +555,28 @@ test("OpenCode v2 envelopes stream text and complete a native turn", () => {
     data: { sessionID: "session-1", assistantMessageID: "assistant-1" }
   });
   server.handleEvent({
+    type: "session.step.started",
+    data: {
+      sessionID: "session-1",
+      assistantMessageID: "assistant-1",
+      model: { id: "native-model", providerID: "native-provider" }
+    }
+  });
+  server.handleEvent({
     type: "session.text.delta",
     data: {
       sessionID: "session-1",
       assistantMessageID: "assistant-1",
       delta: "Hello from OpenCode v2"
+    }
+  });
+  server.handleEvent({
+    type: "session.step.ended",
+    data: {
+      sessionID: "session-1",
+      assistantMessageID: "assistant-1",
+      tokens: { input: 12, output: 4, reasoning: 2, cache: { read: 3, write: 1 } },
+      cost: 0.002
     }
   });
   server.handleEvent({
@@ -572,6 +589,23 @@ test("OpenCode v2 envelopes stream text and complete a native turn", () => {
     {
       type: "assistant.delta",
       data: { itemId: "assistant-1", delta: "Hello from OpenCode v2" }
+    },
+    {
+      type: "usage.recorded",
+      data: {
+        usageId: "assistant-1",
+        model: "native-model",
+        modelProvider: "native-provider",
+        usage: {
+          inputTokens: 16,
+          outputTokens: 6,
+          totalTokens: 22,
+          cachedInputTokens: 3,
+          reasoningTokens: 2,
+          cacheWriteTokens: 1,
+          costUsd: 0.002
+        }
+      }
     },
     { type: "turn.status", data: { status: "completed" } }
   ]);

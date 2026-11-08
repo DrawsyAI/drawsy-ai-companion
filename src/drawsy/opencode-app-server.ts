@@ -37,6 +37,7 @@ import {
   type JsonObject
 } from "./protocol.js";
 import { extractUserPrompt } from "./conversation-history.js";
+import { inclusiveTokenCount, usageEvent, usageNumber } from "./agent-usage.js";
 import { executableEnvironment } from "./executable-resolver.js";
 
 type OpenCodeSessionConfig = {
@@ -323,11 +324,11 @@ export const availableOpenCodeSkills = async (
   const nativeSkills = await discoverOpenCodeSkills(
     (await openCodeSkillDirectories(workspaceRoot, homeDirectory)).reverse()
   );
-  const nativeNames = new Set(nativeSkills.map((skill) => skill.name));
   const bundledSkills = await loadBundledSkills();
+  const bundledNames = new Set(bundledSkills.map((skill) => skill.name));
   return [
-    ...nativeSkills,
-    ...bundledSkills.filter((skill) => !nativeNames.has(skill.name))
+    ...bundledSkills,
+    ...nativeSkills.filter((skill) => !bundledNames.has(skill.name))
   ];
 };
 
@@ -742,6 +743,7 @@ export class OpenCodeAppServer {
   private readonly partKinds = new Map<string, string>();
   private readonly knownAssistantMessageIds = new Set<string>();
   private activeAssistantMessageId: string | null = null;
+  private usageModel: { messageId: string; model: string; provider: string } | null = null;
   private readonly apiKeyProviderIds = new Set<string>();
   private readonly apiKeyConnections = new Map<string, Set<string>>();
   private readonly providerNames = new Map<string, string>();
@@ -1446,6 +1448,7 @@ export class OpenCodeAppServer {
   private beginTurn() {
     this.turnFailure = null;
     this.activeAssistantMessageId = null;
+    this.usageModel = null;
     this.turnActive = true;
     this.emit({ type: "turn.status", data: { status: "inProgress" } });
   }
@@ -1719,6 +1722,33 @@ export class OpenCodeAppServer {
     }
   }
 
+  private recordUsage(messageId: string, value: JsonObject, model: string, provider: string) {
+    const tokens = toRecord(value.tokens);
+    const cache = toRecord(tokens.cache);
+    const input = inclusiveTokenCount(tokens.input, cache.read, cache.write);
+    const output = inclusiveTokenCount(tokens.output, tokens.reasoning);
+    // The v2 schema reports disjoint token buckets. Older messages can also
+    // carry a native total, which takes precedence.
+    const hasAllBuckets = [tokens.input, tokens.output, tokens.reasoning, cache.read, cache.write]
+      .every((value) => usageNumber(value) !== undefined);
+    const measured = usageEvent(
+      messageId,
+      {
+        inputTokens: input,
+        outputTokens: output,
+        totalTokens: usageNumber(tokens.total) ??
+          (hasAllBuckets && input !== undefined && output !== undefined ? input + output : undefined),
+        cachedInputTokens: cache.read,
+        reasoningTokens: tokens.reasoning,
+        cacheWriteTokens: cache.write,
+        costUsd: value.cost
+      },
+      model || this.agentMetadata?.model,
+      provider || this.agentMetadata?.modelProvider
+    );
+    if (measured) this.emit(measured);
+  }
+
   private handleEvent(event: OpenCodeEvent) {
     const type = stringValue(event.type);
     const properties = toRecord(event.properties ?? event.data);
@@ -1737,8 +1767,7 @@ export class OpenCodeAppServer {
       type.startsWith("session.text.") ||
       type.startsWith("session.reasoning.") ||
       type.startsWith("session.tool.") ||
-      type === "session.step.started" ||
-      type === "session.step.failed"
+      type.startsWith("session.step.")
     ) {
       this.handleV2Event(type, properties);
       return;
@@ -1751,6 +1780,10 @@ export class OpenCodeAppServer {
           !this.knownAssistantMessageIds.has(messageId);
         if (this.turnActive && isNewAssistantMessage) {
           this.activeAssistantMessageId = messageId;
+        }
+        if (this.turnActive && messageId === this.activeAssistantMessageId &&
+            typeof toRecord(info.time).completed === "number") {
+          this.recordUsage(messageId, info, stringValue(info.modelID), stringValue(info.providerID));
         }
         this.knownAssistantMessageIds.add(messageId);
       }
@@ -1868,6 +1901,17 @@ export class OpenCodeAppServer {
       stringValue(properties.messageID);
     if (messageId && this.turnActive) {
       this.activeAssistantMessageId = messageId;
+    }
+    if (type === "session.step.started" && this.turnActive && messageId) {
+      const model = toRecord(properties.model);
+      this.usageModel = { messageId, model: stringValue(model.id), provider: stringValue(model.providerID) };
+    }
+    if (type === "session.step.ended" || type === "session.step.failed") {
+      if (this.turnActive && messageId && isRecord(properties.tokens)) {
+        const model = this.usageModel?.messageId === messageId ? this.usageModel : null;
+        this.recordUsage(messageId, properties, model?.model ?? "", model?.provider ?? "");
+      }
+      if (type === "session.step.ended") return;
     }
     if (type === "session.execution.started") {
       if (this.turnActive && !this.turnFailure) {

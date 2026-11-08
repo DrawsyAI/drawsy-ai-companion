@@ -24,6 +24,7 @@ import type {
   JsonObject,
 } from "./protocol.js";
 import { isRecord } from "./protocol.js";
+import { usageEvent, usageNumber } from "./agent-usage.js";
 import { resolveCodexBinary } from "./codex-binary.js";
 import { extractUserPrompt } from "./conversation-history.js";
 import { drawsyMcpProcess, resolveDrawsyMcpEntry } from "./mcp-launcher.js";
@@ -736,24 +737,6 @@ const NATIVE_CHROME_BUNDLED_SKILL_NAMES = new Set(["drawsy-browser-use"]);
 const NATIVE_CHROME_INTENT =
   /\b(current\s+tab|this\s+tab|current\s+page|this\s+page|chrome|browser)\b/i;
 
-const BLOCKED_PLUGIN_IDS = new Set([
-  "browser@openai-bundled",
-  "computer-use@openai-bundled",
-  "unified-computer-use@openai-bundled",
-]);
-
-const INTERNAL_MCP_SERVER_NAMES = new Set([
-  "node_repl",
-  "cua_repl",
-  "computer-use",
-]);
-
-const blockedCapability = (value: string) =>
-  /(^|[-_\/@\s])(browser|chrome|computer)([-_\/@\s]|$)/i.test(value);
-
-const nativeChromeCapability = (value: string) =>
-  /(^|[-_\\/@\s])chrome([-_\\/@\s]|$)/i.test(value) && !/computer/i.test(value);
-
 type NativeChromePlugin = { id: string; path: string };
 
 const availableNativeChromePlugin = (
@@ -896,7 +879,7 @@ const readLocalControlIcon = async (
   return `data:${mimeType};base64,${bytes.toString("base64")}`;
 };
 
-const resolveControlIcon = async ({
+export const resolveControlIcon = async ({
   localPath,
   remoteUrl,
   directory,
@@ -965,6 +948,8 @@ export class CodexAppServer {
   private turnActive = false;
   private hasSubmittedTurn = false;
   private activeTurnId: string | null = null;
+  private turnUsageModel: string | undefined;
+  private lastThreadTokenCount: number | undefined;
   private activeDrawMode = false;
   private nativeBrowserFailureInterruptSent = false;
   private agentMetadata: AgentMetadata | null = null;
@@ -1019,19 +1004,11 @@ export class CodexAppServer {
         "app-server",
         "--stdio",
         "--disable",
-        "apps",
-        "--disable",
-        "computer_use",
-        "--disable",
-        "remote_plugin",
-        "--disable",
         "multi_agent",
         "--disable",
         "goals",
         "--disable",
         "tool_suggest",
-        "--disable",
-        "skill_mcp_dependency_install",
         "--disable",
         "network_proxy",
       ],
@@ -1347,42 +1324,10 @@ export class CodexAppServer {
         this.nativeChromeBrowserClientUrl
     );
     this.bundledSkills = await loadBundledSkills();
-    // Codex validates transport even when a server is disabled. Preserve the
-    // existing transport, and never invent empty entries for absent servers.
-    const disabledMcpServers = Object.fromEntries(
-      Object.entries(currentMcpServers).flatMap(([name, value]) => {
-        if (!isRecord(value)) return [];
-        const transport = typeof value.command === "string"
-          ? { command: value.command }
-          : typeof value.url === "string" ? { url: value.url } : null;
-        return transport ? [[name, { ...transport, enabled: false }]] : [];
-      })
-    );
     const mcpEntry = resolveDrawsyMcpEntry(import.meta.url);
     const mcpProcess = drawsyMcpProcess(mcpEntry);
     this.threadBaseConfig = {
-      plugins: {
-        "browser@openai-bundled": {
-          enabled: false,
-        },
-        ...(this.nativeChromePluginId
-          ? {
-              [this.nativeChromePluginId]: {
-                enabled: this.nativeChromeAvailable,
-              },
-            }
-          : {}),
-        "computer-use@openai-bundled": { enabled: false },
-        "unified-computer-use@openai-bundled": { enabled: false },
-      },
-      mcp_servers: {
-        ...disabledMcpServers,
-        ...(this.nativeChromeAvailable && nativeChromeMcpConfig
-          ? {
-              node_repl: nativeChromeMcpConfig,
-            }
-          : {}),
-        drawsy: {
+      "mcp_servers.drawsy": {
           command: mcpProcess.command,
           args: mcpProcess.args,
           env: {
@@ -1419,7 +1364,6 @@ export class CodexAppServer {
             update_kanban_checklist_item: { approval_mode: "approve" },
             link_current_canvas_to_kanban_card: { approval_mode: "approve" },
           },
-        },
       },
     };
     await this.startAgentThread({
@@ -1558,12 +1502,7 @@ export class CodexAppServer {
             skill.name !== "drawsy-browser-use"
         )
       : tags.skills;
-    const turnPlugins = fastMode
-      ? tags.plugins.filter(
-          (plugin) =>
-            !blockedCapability(plugin.name) && !blockedCapability(plugin.path)
-        )
-      : tags.plugins;
+    const turnPlugins = tags.plugins;
     const nativeChromeRequested =
       !fastMode && NATIVE_CHROME_INTENT.test(message);
     const preferredNativeChromePlugin = nativeChromeRequested
@@ -1613,6 +1552,7 @@ export class CodexAppServer {
       : [];
     this.turnActive = true;
     this.activeTurnId = null;
+    this.turnUsageModel = undefined;
     this.activeDrawMode = pointerDrawMode;
     this.nativeBrowserFailureInterruptSent = false;
     try {
@@ -1759,9 +1699,9 @@ export class CodexAppServer {
       (await Promise.all([
         this.request("model/list", { limit: 100, includeHidden: false }),
         this.request("skills/list", { cwds: [this.folderPath] }),
-        this.request("plugin/list", {
-          cwds: [this.folderPath],
-          marketplaceKinds: ["local"],
+        this.request("plugin/installed", { cwds: [this.folderPath] }).catch((error) => {
+          if (!(error instanceof CodexRpcError) || error.code !== -32601) throw error;
+          return this.request("plugin/list", { cwds: [this.folderPath] });
         }),
         this.request("mcpServerStatus/list", {
           limit: 100,
@@ -1847,17 +1787,7 @@ export class CodexAppServer {
                 }
                 const pathValue =
                   typeof skill.path === "string" ? skill.path : "";
-                const isNativeChromeSkill =
-                  this.nativeChromeAvailable &&
-                  (nativeChromeCapability(skill.name) ||
-                    nativeChromeCapability(pathValue));
-                if (
-                  !pathValue ||
-                  (blockedCapability(skill.name) && !isNativeChromeSkill) ||
-                  (/\/computer-use\//i.test(pathValue) && !isNativeChromeSkill)
-                ) {
-                  return null;
-                }
+                if (!pathValue) return null;
                 const skillInterface = isRecord(skill.interface)
                   ? skill.interface
                   : {};
@@ -1901,8 +1831,7 @@ export class CodexAppServer {
                   typeof plugin.name !== "string" ||
                   plugin.installed !== true ||
                   plugin.enabled !== true ||
-                  plugin.availability !== "AVAILABLE" ||
-                  BLOCKED_PLUGIN_IDS.has(plugin.id)
+                  plugin.availability !== "AVAILABLE"
                 ) {
                   return null;
                 }
@@ -1912,30 +1841,18 @@ export class CodexAppServer {
                 const pluginSource = isRecord(plugin.source)
                   ? plugin.source
                   : {};
-                const pluginPath =
+                const pluginRoot =
                   pluginSource.type === "local" &&
                   typeof pluginSource.path === "string"
                     ? pluginSource.path
                     : "";
-                if (!pluginPath) return null;
-                const isNativeChromePlugin =
-                  this.nativeChromeAvailable &&
-                  plugin.id === this.nativeChromePluginId;
-                if (blockedCapability(plugin.id) && !isNativeChromePlugin) {
-                  return null;
-                }
+                const pluginPath = `plugin://${plugin.id}`;
                 const capabilities = Array.isArray(pluginInterface.capabilities)
                   ? pluginInterface.capabilities.filter(
                       (capability): capability is string =>
                         typeof capability === "string"
                     )
                   : [];
-                if (
-                  capabilities.some(blockedCapability) &&
-                  !isNativeChromePlugin
-                ) {
-                  return null;
-                }
                 const iconUrl = await resolveControlIcon({
                   localPath:
                     pluginInterface.composerIcon ||
@@ -1945,7 +1862,7 @@ export class CodexAppServer {
                     pluginInterface.composerIconUrl ||
                     pluginInterface.logoUrl ||
                     pluginInterface.logoUrlDark,
-                  directory: pluginPath,
+                  directory: pluginRoot,
                 });
                 const brandColor = validBrandColor(pluginInterface.brandColor);
                 return {
@@ -1973,16 +1890,11 @@ export class CodexAppServer {
       ? mcpResult.data.flatMap((server) => {
           if (
             !isRecord(server) ||
-            typeof server.name !== "string" ||
-            INTERNAL_MCP_SERVER_NAMES.has(server.name) ||
-            blockedCapability(server.name)
+            typeof server.name !== "string"
           ) {
             return [];
           }
           const tools = isRecord(server.tools) ? Object.keys(server.tools) : [];
-          if (tools.some(blockedCapability)) {
-            return [];
-          }
           return [
             {
               name: server.name,
@@ -2359,6 +2271,32 @@ export class CodexAppServer {
           },
         });
       }
+    } else if (message.method === "thread/tokenUsage/updated") {
+      if (params.threadId !== this.threadId || !isRecord(params.tokenUsage)) return;
+      const { total, last } = params.tokenUsage;
+      if (!isRecord(total) || !isRecord(last)) return;
+      const count = usageNumber(total.totalTokens);
+      if (count === undefined || count === this.lastThreadTokenCount) return;
+      this.lastThreadTokenCount = count;
+
+      // Context estimates and replayed snapshots are not billable samples.
+      if (!this.turnActive || typeof params.turnId !== "string" ||
+          params.turnId !== this.activeTurnId ||
+          !((usageNumber(last.inputTokens) ?? 0) > 0 || (usageNumber(last.outputTokens) ?? 0) > 0)) return;
+      const measured = usageEvent(
+        `${params.turnId}:${count}`,
+        {
+          inputTokens: last.inputTokens,
+          outputTokens: last.outputTokens,
+          totalTokens: last.totalTokens,
+          cachedInputTokens: last.cachedInputTokens,
+          reasoningTokens: last.reasoningOutputTokens,
+          cacheWriteTokens: last.cacheWriteInputTokens
+        },
+        this.turnUsageModel || this.agentMetadata?.model,
+        this.agentMetadata?.modelProvider
+      );
+      if (measured) this.emit(measured);
     } else if (message.method === "turn/completed" && isRecord(params.turn)) {
       this.turnActive = false;
       this.activeTurnId = null;
@@ -2424,6 +2362,9 @@ export class CodexAppServer {
         },
       });
     } else if (message.method === "model/rerouted") {
+      if (typeof params.toModel === "string" && params.turnId === this.activeTurnId) {
+        this.turnUsageModel = params.toModel;
+      }
       const from =
         typeof params.fromModel === "string" ? params.fromModel : "model";
       const to =

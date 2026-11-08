@@ -4,6 +4,13 @@ import path from "node:path";
 
 import type { AgentAccessMode, AgentEngine } from "./protocol.js";
 
+import {
+  listHarnessActivity,
+  readHarnessActivity,
+  recordHarnessMessage,
+  recordHarnessUsage
+} from "./harness-activity.js";
+
 export type LocalConversationScope = "canvas" | "general";
 
 export type LocalAgentPreference = {
@@ -39,10 +46,17 @@ export type LocalConversation = {
   openCodeSessionId: string | null;
 };
 
+type StoredConversation = LocalConversation & {
+  activity?: ReturnType<typeof readHarnessActivity>;
+};
+
+const publicConversation = ({ activity: _activity, ...conversation }: StoredConversation) =>
+  conversation;
+
 type StoreData = {
   version: 1;
   preferences: LocalConversationPreferences;
-  conversations: LocalConversation[];
+  conversations: StoredConversation[];
   rememberedFolders: Record<string, string>;
 };
 
@@ -81,7 +95,7 @@ const localStateDirectory = () => {
   return path.join(process.env.XDG_STATE_HOME || path.join(homedir(), ".local", "state"), "drawsy-ai");
 };
 
-const isAgentEngine = (value: unknown): value is AgentEngine =>
+export const isAgentEngine = (value: unknown): value is AgentEngine =>
   value === "codex" || value === "opencode" || value === "pi" || value === "omp" || value === "deepseek";
 
 const isAccessMode = (value: unknown): value is AgentAccessMode =>
@@ -98,7 +112,7 @@ const readPreference = (value: unknown): LocalAgentPreference => {
   };
 };
 
-const readConversation = (value: unknown): LocalConversation | null => {
+const readConversation = (value: unknown): StoredConversation | null => {
   const record = value && typeof value === "object" ? value as Record<string, unknown> : null;
   if (
     !record ||
@@ -122,6 +136,7 @@ const readConversation = (value: unknown): LocalConversation | null => {
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     messageCount: Math.max(0, Math.floor(record.messageCount)),
+    activity: readHarnessActivity(record.activity),
     workspacePath:
       typeof record.workspacePath === "string" ? record.workspacePath : null,
     codexThreadId: typeof record.codexThreadId === "string" ? record.codexThreadId : null,
@@ -160,7 +175,7 @@ export class LocalConversationStore {
         updatedAt: typeof preferencesRecord.updatedAt === "number" ? preferencesRecord.updatedAt : 0
       } satisfies LocalConversationPreferences;
       const conversations = Array.isArray(record.conversations)
-        ? record.conversations.map(readConversation).filter((item): item is LocalConversation => !!item)
+        ? record.conversations.map(readConversation).filter((item): item is StoredConversation => !!item)
         : [];
       const rememberedFoldersRecord =
         record.rememberedFolders && typeof record.rememberedFolders === "object"
@@ -226,13 +241,30 @@ export class LocalConversationStore {
         (scope === "general" || conversation.canvasId === canvasId)
       )
       .sort((left, right) => right.updatedAt - left.updatedAt)
-      .map((conversation) => ({ ...conversation }));
+      .map(publicConversation);
+  }
+
+  async getHarnessActivity(engine: AgentEngine, page: number, model: string | null) {
+    await this.loaded;
+    await this.writeQueue;
+    return listHarnessActivity(
+      this.data.conversations.filter((conversation) => conversation.engine === engine),
+      page,
+      model
+    );
+  }
+
+  async recordUsage(id: string, event: Parameters<typeof recordHarnessUsage>[1]) {
+    return this.mutate(() => {
+      const conversation = this.data.conversations.find((item) => item.id === id);
+      if (conversation) recordHarnessUsage(conversation, event);
+    });
   }
 
   async get(id: string) {
     await this.loaded;
     const conversation = this.data.conversations.find((item) => item.id === id);
-    return conversation ? { ...conversation } : null;
+    return conversation ? publicConversation(conversation) : null;
   }
 
   async upsert(input: Omit<LocalConversation, "codexThreadId" | "openCodeSessionId">) {
@@ -240,7 +272,7 @@ export class LocalConversationStore {
       const existing = this.data.conversations.find((item) => item.id === input.id);
       const workspaceChanged =
         !!existing && existing.workspacePath !== input.workspacePath;
-      const conversation: LocalConversation = existing
+      const conversation: StoredConversation = existing
         ? {
             ...existing,
             ...input,
@@ -255,7 +287,7 @@ export class LocalConversationStore {
       const index = this.data.conversations.findIndex((item) => item.id === input.id);
       if (index >= 0) this.data.conversations[index] = conversation;
       else this.data.conversations.push(conversation);
-      return { ...conversation };
+      return publicConversation(conversation);
     });
   }
 
@@ -280,7 +312,11 @@ export class LocalConversationStore {
     });
   }
 
-  async recordUserMessage(id: string, message: string) {
+  async recordUserMessage(
+    id: string,
+    message: string,
+    agent?: { model: string; modelProvider: string }
+  ) {
     return this.mutate(() => {
       const conversation = this.data.conversations.find((item) => item.id === id);
       if (!conversation) throw new Error("Conversation does not exist locally.");
@@ -290,7 +326,8 @@ export class LocalConversationStore {
         conversation.title = trimmed.slice(0, 96);
       }
       conversation.messageCount += 1;
-      return { ...conversation };
+      if (agent) recordHarnessMessage(conversation, agent.model, agent.modelProvider);
+      return publicConversation(conversation);
     });
   }
 
@@ -310,7 +347,7 @@ export class LocalConversationStore {
       if (engine === "codex") conversation.codexThreadId = nativeSessionId;
       else conversation.openCodeSessionId = nativeSessionId;
       conversation.updatedAt = Date.now();
-      return { ...conversation };
+      return publicConversation(conversation);
     });
   }
 
