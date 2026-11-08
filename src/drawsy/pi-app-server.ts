@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
@@ -21,7 +22,7 @@ import {
   loadBundledFastDiagramSkill,
   loadBundledSkill
 } from "./codex-app-server.js";
-import { availableOpenCodeSkills } from "./opencode-app-server.js";
+import { availableOpenCodeSkills, discoverOpenCodeSkills } from "./opencode-app-server.js";
 import {
   isRecord,
   type AgentContextCapture,
@@ -41,6 +42,8 @@ import { resolvePiBinary } from "./pi-binary.js";
 import { forceStopNativeCli, spawnNativeCli } from "./native-cli.js";
 import { drawsyMcpProcess, resolveDrawsyMcpEntry } from "./mcp-launcher.js";
 import { executableEnvironment } from "./executable-resolver.js";
+
+import { inclusiveTokenCount, usageEvent } from "./agent-usage.js";
 
 type AgentEngine = "pi" | "omp";
 
@@ -819,7 +822,7 @@ export class PiAppServer {
     const skills = fastMode
       ? tags.skills.filter((skill) => skill.name !== "drawsy-teaching-diagrams" && skill.name !== "drawsy-fast-diagrams")
       : tags.skills;
-    const availableSkills = await availableOpenCodeSkills(this.folderPath);
+    const availableSkills = await this.availableSkills();
     for (const selected of skills) {
       if (!availableSkills.some((option) => option.name === selected.name && option.path === selected.path)) {
         throw new Error(`Skill is not available: ${selected.name}`);
@@ -900,13 +903,34 @@ export class PiAppServer {
     await this.rpc.request("steer", { message });
   }
 
+  private async availableSkills() {
+    const profile = process.env.OMP_PROFILE || process.env.PI_PROFILE;
+    const configured = process.env.PI_CODING_AGENT_DIR;
+    const defaultRoot = this.engine === "omp"
+      ? path.join(homedir(), ".omp", "agent")
+      : path.join(homedir(), ".pi", "agent");
+    const agentRoot = this.engine === "omp" && profile
+      ? path.join(homedir(), ".omp", "profiles", profile, "agent")
+      : configured
+        ? path.resolve(configured.startsWith("~/")
+          ? path.join(homedir(), configured.slice(2)) : configured)
+        : defaultRoot;
+    const nativeSkills = await discoverOpenCodeSkills([
+      path.join(this.folderPath, this.engine === "omp" ? ".omp" : ".pi", "skills"),
+      path.join(agentRoot, "skills")
+    ]);
+    const common = await availableOpenCodeSkills(this.folderPath);
+    const commonNames = new Set(common.map((skill) => skill.name));
+    return [...common, ...nativeSkills.filter((skill) => !commonNames.has(skill.name))];
+  }
+
   async getControls(): Promise<AgentControls> {
     if (!this.rpc) throw new Error(`${this.label} is not ready.`);
     const [available, state, levels, skills] = await Promise.all([
       this.rpc.request<{ models?: PiModel[] }>("get_available_models"),
       this.rpc.request<RpcRecord>("get_state"),
       this.rpc.request<{ levels?: string[] }>("get_available_thinking_levels"),
-      availableOpenCodeSkills(this.folderPath)
+      this.availableSkills()
     ]);
     const current = isRecord(state.model) ? state.model as PiModel : this.currentModel;
     const currentLevels = array(levels.levels).filter((value): value is string => typeof value === "string");
@@ -998,9 +1022,28 @@ export class PiAppServer {
         ? message.content
         : array(message.content).flatMap((part) => isRecord(part) && part.type === "text" && typeof part.text === "string" ? [part.text] : []).join("\n");
       const itemId = this.activeAssistantMessageId || randomUUID();
+      const usage = record(message.usage);
+      const measured = usageEvent(
+        string(event.messageId) || string(message.responseId) || itemId,
+        {
+          inputTokens: inclusiveTokenCount(usage.input, usage.cacheRead, usage.cacheWrite),
+          outputTokens: usage.output,
+          totalTokens: usage.totalTokens,
+          cachedInputTokens: usage.cacheRead,
+          reasoningTokens: usage.reasoning,
+          cacheWriteTokens: usage.cacheWrite,
+          costUsd: record(usage.cost).total
+        },
+        string(message.model) || this.agentMetadata?.model,
+        string(message.provider) || this.agentMetadata?.modelProvider
+      );
       const hasError = typeof message.errorMessage === "string" && message.errorMessage.length > 0;
-      if (this.engine === "omp" && (hasError || message.stopReason === "error")) return;
-      if (this.engine === "pi" && (hasError || message.stopReason === "error")) {
+      const failed = hasError || message.stopReason === "error";
+      if (measured && (!failed || Object.values(measured.data.usage).some((value) => value > 0))) {
+        this.emit(measured);
+      }
+      if (this.engine === "omp" && failed) return;
+      if (this.engine === "pi" && failed) {
         const denied = /401|403|unauthori[sz]ed|forbidden|api key|credential/i.test(string(message.errorMessage));
         this.turnFailure = {
           message: denied ? "The AI provider refused this request. Check the login in Pi." : "Pi could not complete this request. Check the selected provider login and model."

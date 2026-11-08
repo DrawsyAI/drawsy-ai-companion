@@ -420,7 +420,26 @@ export type AgentResourceTurn = {
   expiresAt: number;
 };
 
+export type AgentUsage = {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  cachedInputTokens?: number;
+  reasoningTokens?: number;
+  cacheWriteTokens?: number;
+  costUsd?: number;
+};
+
 export type BridgeEvent =
+  | {
+      type: "usage.recorded";
+      data: {
+        usageId: string;
+        usage: AgentUsage;
+        model?: string;
+        modelProvider?: string;
+      };
+    }
   | {
       type: "session.ready";
       data: { folderName: string | null; agent: AgentMetadata };

@@ -10,8 +10,9 @@ import type {
   AiResourceId
 } from "./protocol.js";
 import { isRecord } from "./protocol.js";
+import { inclusiveTokenCount, usageEvent } from "./agent-usage.js";
 import { spawnNativeCli, forceStopNativeCli } from "./native-cli.js";
-import { FAST_MODE_INSTRUCTION, getDeveloperInstructions, loadBundledFastDiagramSkill, loadBundledSkill } from "./codex-app-server.js";
+import { FAST_MODE_INSTRUCTION, getDeveloperInstructions, loadBundledFastDiagramSkill, loadBundledSkill, loadBundledSkills } from "./codex-app-server.js";
 import { drawsyMcpProcess, resolveDrawsyMcpEntry } from "./mcp-launcher.js";
 import { executableEnvironment } from "./executable-resolver.js";
 import { getDeepSeekModelCatalog } from "./deepseek-model-catalog.js";
@@ -229,6 +230,29 @@ export class DeepSeekAppServer {
         const message = rec(data.message); const content = arr(message.content).flatMap((part) => {
           const block = rec(part); return block.type === "text" && typeof block.text === "string" ? [block.text] : [];
         }).join("");
+        // The durable settlement can carry usage directly or in its final
+        // usage chunk, depending on the SDK release.
+        const usageChunk = arr(data.stream).map((entry) => rec(rec(entry).chunk))
+          .reverse().find((chunk) => chunk.type === "usage");
+        const usage = rec(data.usage ?? usageChunk?.usage);
+        const source = rec(message.source);
+        const messageId = text(message.id) || (typeof event.seq === "number" ? String(event.seq) : "");
+        if (this.turnActive && messageId) {
+          const measured = usageEvent(
+            messageId,
+            {
+              inputTokens: inclusiveTokenCount(usage.inputTokens, usage.cacheReadTokens, usage.cacheWriteTokens),
+              outputTokens: usage.outputTokens,
+              totalTokens: usage.totalTokens,
+              cachedInputTokens: usage.cacheReadTokens,
+              reasoningTokens: usage.reasoningTokens,
+              cacheWriteTokens: usage.cacheWriteTokens
+            },
+            text(source.model) || this.metadata.model,
+            text(source.provider) || this.metadata.modelProvider
+          );
+          if (measured) this.emit(measured);
+        }
         if (content) {
           const itemId = this.assistantId || randomUUID(); this.assistantText += content;
           this.emit({ type: "assistant.final", data: { itemId, text: content } });
@@ -354,7 +378,7 @@ export class DeepSeekAppServer {
           isDefault: this.agent.model === model.id && this.agent.modelProvider === group.id
         };
       })),
-      skills: [], plugins: [],
+      skills: await loadBundledSkills(), plugins: [],
       mcpServers: [{ name: "drawsy", toolCount: undefined, authStatus: "connected" }],
       apiKeyProviders: []
     };

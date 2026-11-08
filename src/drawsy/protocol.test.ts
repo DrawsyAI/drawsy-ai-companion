@@ -717,8 +717,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     { name: "control-in-app-browser", description: "Control the in-app browser", path: "/plugins/browser/skills/control-in-app-browser/SKILL.md", enabled: true },
     { name: "drawsy-browser-use", description: "Local copy that must not win", path: "/Users/adarsh/.codex/skills/r0/drawsy-browser-use/SKILL.md", enabled: true }
   ], errors: [] }] } });
-  if (message.method === "plugin/list") send({ id: message.id, result: { marketplaces: [{ name: "local", path: "/plugins", interface: null, plugins: [
-    { id: "documents@openai-primary-runtime", name: "documents", installed: true, enabled: true, availability: "AVAILABLE", source: { type: "local", path: "/plugins/documents" }, interface: { displayName: "Documents", shortDescription: "Document tools", capabilities: ["skills"] } },
+  if (message.method === "plugin/list" || message.method === "plugin/installed") send({ id: message.id, result: { marketplaces: [{ name: "local", path: "/plugins", interface: null, plugins: [
+    { id: "documents@openai-primary-runtime", name: "documents", installed: true, enabled: true, availability: "AVAILABLE", source: { type: "remote" }, interface: { displayName: "Documents", shortDescription: "Document tools", capabilities: ["skills"] } },
     { id: "browser@openai-bundled", name: "browser", installed: true, enabled: true, availability: "AVAILABLE", source: { type: "local", path: "/plugins/browser" }, interface: { displayName: "Browser", shortDescription: "Browser control", capabilities: ["browser"] } },
     { id: "chrome@vendor", name: "chrome", installed: true, enabled: true, availability: "AVAILABLE", source: { type: "local", path: ${JSON.stringify(
       chromePluginRoot
@@ -1190,11 +1190,11 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     );
     assert.equal(
       controls.skills.some((skill) => skill.name === "control-in-app-browser"),
-      false
+      true
     );
     assert.deepEqual(
       controls.plugins.map((plugin) => plugin.id),
-      ["documents@openai-primary-runtime", "chrome@vendor"]
+      ["documents@openai-primary-runtime", "browser@openai-bundled", "chrome@vendor"]
     );
     const chromePlugin = controls.plugins.find(
       (plugin) => plugin.id === "chrome@vendor"
@@ -1205,6 +1205,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     assert.equal(chromePlugin.brandColor, "#85b3e0");
     assert.deepEqual(controls.mcpServers, [
       { name: "drawsy", toolCount: 20, authStatus: "unsupported" },
+      { name: "computer-use", toolCount: 0, authStatus: "unsupported" },
+      { name: "cua_repl", toolCount: 3, authStatus: "unsupported" },
     ]);
 
     const countThreadStarts = async () =>
@@ -1266,7 +1268,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
               path: "/plugins/documents/skills/documents/SKILL.md",
             },
           ],
-          plugins: [{ name: "Documents", path: "/plugins/documents" }],
+          plugins: [{ name: "Documents", path: "plugin://documents@openai-primary-runtime" }],
           contexts: [
             {
               id: contextId,
@@ -1355,7 +1357,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       .map((line) => JSON.parse(line))
       .find((message) => message.method === "thread/start");
     const fastInternalSecret =
-      fastThreadStart.params.config.mcp_servers.drawsy.env
+      fastThreadStart.params.config["mcp_servers.drawsy"].env
         .DRAWSY_SESSION_SECRET;
     const fastInternalHeaders = {
       authorization: `Bearer ${fastInternalSecret}`,
@@ -1453,7 +1455,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
         (item: { type?: string; name?: string }) =>
           item.type === "mention" && item.name === chromePlugin.name
       ),
-      false
+      true
     );
     const finishSlowApply = slowApplyControl.finish;
     assert.ok(finishSlowApply);
@@ -1738,55 +1740,27 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       thread.params.developerInstructions,
       /contextual guidance, not an absolute rule/
     );
-    assert.equal(thread.params.config.mcp_servers.inherited.enabled, false);
-    assert.equal(thread.params.config.mcp_servers.drawsy.enabled, true);
-    assert.equal(
-      thread.params.config.plugins["browser@openai-bundled"].enabled,
-      false
-    );
-    assert.equal(thread.params.config.plugins["chrome@vendor"].enabled, true);
-    assert.equal(
-      thread.params.config.plugins["computer-use@openai-bundled"].enabled,
-      false
-    );
-    assert.equal(
-      thread.params.config.plugins["unified-computer-use@openai-bundled"]
-        .enabled,
-      false
-    );
-    assert.equal(
-      thread.params.config.mcp_servers["computer-use"],
-      undefined
-    );
-    assert.equal(thread.params.config.mcp_servers.inherited.command, "bad");
-    assert.equal(thread.params.config.mcp_servers.node_repl.enabled, true);
-    assert.equal(
-      thread.params.config.mcp_servers.node_repl.command,
-      "node-repl"
-    );
-    assert.equal(
-      thread.params.config.mcp_servers.node_repl.env
-        .BROWSER_USE_AVAILABLE_BACKENDS,
-      "chrome"
-    );
+    assert.equal(thread.params.config.mcp_servers, undefined);
+    assert.equal(thread.params.config.plugins, undefined);
+    assert.equal(thread.params.config["mcp_servers.drawsy"].enabled, true);
     assert.equal(thread.params.config.web_search, undefined);
     assert.equal(
-      thread.params.config.mcp_servers.drawsy.tools.apply_canvas_changes
+      thread.params.config["mcp_servers.drawsy"].tools.apply_canvas_changes
         .approval_mode,
       "approve"
     );
     assert.equal(
-      thread.params.config.mcp_servers.drawsy.tools.add_image_from_file
+      thread.params.config["mcp_servers.drawsy"].tools.add_image_from_file
         .approval_mode,
       "approve"
     );
     assert.equal(
-      thread.params.config.mcp_servers.drawsy.tools
+      thread.params.config["mcp_servers.drawsy"].tools
         .replace_canvas_image_from_file.approval_mode,
       "approve"
     );
     assert.equal(
-      thread.params.config.mcp_servers.drawsy.tools.attach_live_preview
+      thread.params.config["mcp_servers.drawsy"].tools.attach_live_preview
         .approval_mode,
       "approve"
     );
@@ -1802,12 +1776,12 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       "link_current_canvas_to_kanban_card",
     ]) {
       assert.equal(
-        thread.params.config.mcp_servers.drawsy.tools[tool].approval_mode,
+        thread.params.config["mcp_servers.drawsy"].tools[tool].approval_mode,
         "approve"
       );
     }
     assert.equal(
-      thread.params.config.mcp_servers.drawsy.env.DRAWSY_WORKSPACE_ROOT,
+      thread.params.config["mcp_servers.drawsy"].env.DRAWSY_WORKSPACE_ROOT,
       canonicalFolder
     );
     const threads = log.filter((message) => message.method === "thread/start");
@@ -1827,6 +1801,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     assert.equal(turn.params.environments, undefined);
     assert.equal(turn.params.input[0].type, "skill");
     assert.equal(turn.params.input[1].type, "mention");
+    assert.equal(turn.params.input[1].path, "plugin://documents@openai-primary-runtime");
     assert.match(turn.params.input[2].text, /Canvas context 1/);
     assert.match(turn.params.input[2].text, /2 selected elements/);
     assert.equal(turn.params.input[3].type, "localImage");
@@ -1955,7 +1930,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     });
 
     const internalSecret =
-      thread.params.config.mcp_servers.drawsy.env.DRAWSY_SESSION_SECRET;
+      thread.params.config["mcp_servers.drawsy"].env.DRAWSY_SESSION_SECRET;
     const imageRequest = fetch(
       `${bridge.address}/internal/sessions/${session.id}/canvas/image`,
       {
