@@ -71,10 +71,19 @@ export type CanvasControlTool =
   | "freedraw" | "text" | "eraser" | "hand" | "frame" | "magicframe" | "embeddable"
   | "laser" | "bucketfill";
 export type CanvasControlRequest =
+  | { action: "set_viewport"; zoom: number; center?: [number, number] }
+  | { action: "set_arrowhead"; end: "start" | "end"; arrowhead: string | null }
+  | { action: "erase_area"; elementIds: string[]; points: [number, number][]; size: number }
+  | { action: "set_arrow_type"; arrowType: "sharp" | "round" | "elbow" }
+  | { action: "erase_objects"; elementIds: string[] }
+  | { action: "set_eraser"; mode: "area" | "object"; size?: number }
+  | (Omit<Extract<CanvasLibraryRequest, { action: "insert" }>, "action"> & {
+      action: "insert_library";
+    })
   | { action: "click"; x: number; y: number }
   | { action: "select"; elementIds: string[] }
   | { action: "clear_selection" }
-  | { action: "set_tool"; tool: CanvasControlTool }
+  | { action: "set_tool"; tool: CanvasControlTool; shapeKind?: string }
   | { action: "drag"; tool?: CanvasControlTool; start: [number, number]; end: [number, number] }
   | { action: "draw_freehand"; points: [number, number][] }
   | { action: "gesture"; points: [number, number][]; tool?: CanvasControlTool }
@@ -1197,11 +1206,31 @@ export const parseCanvasControlRequest = (
   }
   const hasOnlyKeys = (...keys: string[]) =>
     Object.keys(value).every((key) => keys.includes(key));
+  if (value.action === "insert_library") {
+    if (!hasOnlyKeys("action", "source", "packId", "itemId", "x", "y", "operationId")) {
+      throw new Error("Unexpected library placement fields.");
+    }
+    const placement = parseCanvasLibraryRequest({ ...value, action: "insert" });
+    if (placement.action !== "insert") throw new Error("Invalid library placement.");
+    return { ...placement, action: "insert_library" };
+  }
   const isScenePoint = (point: unknown): point is [number, number] =>
     Array.isArray(point) &&
     point.length === 2 &&
     finiteWithin(point[0], -1_000_000, 1_000_000) &&
     finiteWithin(point[1], -1_000_000, 1_000_000);
+  if (
+    value.action === "set_viewport" &&
+    hasOnlyKeys("action", "zoom", "center") &&
+    finiteWithin(value.zoom, 0.1, 30) &&
+    (value.center === undefined || isScenePoint(value.center))
+  ) {
+    return {
+      action: "set_viewport",
+      zoom: value.zoom as number,
+      ...(value.center === undefined ? {} : { center: value.center })
+    };
+  }
   const isControlTool = (tool: unknown): tool is CanvasControlTool =>
     typeof tool === "string" &&
     [
@@ -1222,7 +1251,7 @@ export const parseCanvasControlRequest = (
       "laser",
       "bucketfill"
     ].includes(tool);
-  const isElementIdList = (ids: unknown) =>
+  const isElementIdList = (ids: unknown): ids is string[] =>
     Array.isArray(ids) &&
     ids.length > 0 &&
     ids.length <= 100 &&
@@ -1230,6 +1259,47 @@ export const parseCanvasControlRequest = (
       (id) => typeof id === "string" && id.trim().length > 0 && id.length <= 128
     ) &&
     new Set(ids).size === ids.length;
+  if (value.action === "erase_objects" &&
+      hasOnlyKeys("action", "elementIds") && isElementIdList(value.elementIds)) {
+    return { action: "erase_objects", elementIds: value.elementIds };
+  }
+  if (value.action === "set_eraser" &&
+      hasOnlyKeys("action", "mode", "size") &&
+      (value.mode === "object" || value.mode === "area") &&
+      (value.size === undefined ||
+        (value.mode === "area" && finiteWithin(value.size, 8, 64) &&
+          Number.isInteger(value.size)))) {
+    return {
+      action: "set_eraser",
+      mode: value.mode,
+      ...(value.size === undefined ? {} : { size: value.size as number })
+    };
+  }
+  if (value.action === "set_arrow_type" &&
+      hasOnlyKeys("action", "arrowType") &&
+      (value.arrowType === "sharp" || value.arrowType === "round" || value.arrowType === "elbow")) {
+    return { action: "set_arrow_type", arrowType: value.arrowType };
+  }
+  if (value.action === "erase_area" &&
+      hasOnlyKeys("action", "elementIds", "points", "size") &&
+      isElementIdList(value.elementIds) &&
+      Array.isArray(value.points) && value.points.length >= 2 &&
+      value.points.length <= 512 && value.points.every(isScenePoint) &&
+      finiteWithin(value.size, 8, 64) && Number.isInteger(value.size)) {
+    return {
+      action: "erase_area",
+      elementIds: value.elementIds,
+      points: value.points,
+      size: value.size as number
+    };
+  }
+  if (value.action === "set_arrowhead" &&
+      hasOnlyKeys("action", "end", "arrowhead") &&
+      (value.end === "start" || value.end === "end") &&
+      (value.arrowhead === null ||
+        (typeof value.arrowhead === "string" && /^[a-z_]{1,64}$/.test(value.arrowhead)))) {
+    return { action: "set_arrowhead", end: value.end, arrowhead: value.arrowhead };
+  }
   const isCanvasColor = (color: unknown) =>
     typeof color === "string" &&
     (color === "transparent" ||
@@ -1254,10 +1324,17 @@ export const parseCanvasControlRequest = (
   }
   if (
     value.action === "set_tool" &&
-    hasOnlyKeys("action", "tool") &&
+    hasOnlyKeys("action", "tool", "shapeKind") &&
     isControlTool(value.tool)
   ) {
-    return { action: "set_tool", tool: value.tool as CanvasControlTool };
+    if (value.shapeKind !== undefined) {
+      if (value.tool !== "rectangle" || typeof value.shapeKind !== "string" ||
+          !value.shapeKind.trim() || value.shapeKind.length > 128) {
+        throw new Error("A shape variant requires the rectangle tool and a valid shapeKind.");
+      }
+      return { action: "set_tool", tool: value.tool, shapeKind: value.shapeKind.trim() };
+    }
+    return { action: "set_tool", tool: value.tool };
   }
   if (
     value.action === "drag" &&

@@ -212,8 +212,10 @@ class BridgeRequestError extends Error {
   }
 }
 
-const assertCanvasActionAllowed = (session: Session, action: string) => {
-  if (session.activeDrawMode && !["read", "capabilities", "inspect", "capture", "control"].includes(action)) {
+const assertCanvasActionAllowed = (session: Session, action: string,
+  libraryRequest?: CanvasLibraryRequest) => {
+  if (session.activeDrawMode &&
+    !(action === "library" && (libraryRequest?.action === "search" || libraryRequest?.action === "read")) && !["read", "capabilities", "inspect", "capture", "control"].includes(action)) {
     throw new BridgeRequestError(403, "draw_mode_control_required", "Draw mode only allows direct canvas controls. Switch to Simple or Fast for structured canvas edits.");
   }
   if (
@@ -1260,7 +1262,7 @@ export const createDrawsyBridge = (
       controlRequest?: CanvasControlRequest;
     } = {}
   ) => {
-    assertCanvasActionAllowed(session, action);
+    assertCanvasActionAllowed(session, action, options.libraryRequest);
     if (
       (session.surfaceKind !== "canvas" &&
         session.surfaceKind !== "presentation") ||
@@ -1465,9 +1467,12 @@ export const createDrawsyBridge = (
           | "library"
           | "control";
         const body = await readJson(request);
+        const libraryRequest =
+          action === "library" ? parseCanvasLibraryRequest(body) : undefined;
         assertCanvasActionAllowed(
           session,
-          action === "context" ? "capture" : action
+          action === "context" ? "capture" : action,
+          libraryRequest
         );
         const parsedPreview =
           action === "preview" ? parseLivePreviewRequest(body) : null;
@@ -1504,7 +1509,7 @@ export const createDrawsyBridge = (
               })
             : action === "library"
             ? await requestCanvas(session, "library", {
-                libraryRequest: parseCanvasLibraryRequest(body)
+                libraryRequest
               })
             : action === "control"
             ? await requestCanvas(session, "control", {
