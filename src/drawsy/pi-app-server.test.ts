@@ -83,6 +83,17 @@ test("OMP provider failures use the active OMP login in their message", () => {
   });
 });
 
+test("OMP reports unsupported models without blaming provider login", () => {
+  assert.deepEqual(
+    ompTurnFailure({ error: { httpStatus: 400, message: "400 The requested model is not supported. code=model_not_supported" } }),
+    { message: "The selected OMP provider does not support this model. Choose a model supported by that provider." }
+  );
+  assert.deepEqual(
+    ompTurnFailure({ error: { httpStatus: 400, code: "model_not_supported" } }),
+    { message: "The selected OMP provider does not support this model. Choose a model supported by that provider." }
+  );
+});
+
 test("OMP RPC negotiates v2 and reassembles its chunked event stream", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "drawsy-omp-rpc-"));
   const scriptPath = path.join(root, "fake-omp.mjs");

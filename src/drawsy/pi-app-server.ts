@@ -192,6 +192,14 @@ export const ompTurnFailure = (event: RpcRecord) => {
   const error = record(event.error);
   const message = string(error.message) || string(event.error);
   const httpStatus = Number(error.httpStatus);
+  if (
+    string(error.code) === "model_not_supported" ||
+    /model_not_supported|requested model is not supported/i.test(message)
+  ) {
+    return {
+      message: "The selected OMP provider does not support this model. Choose a model supported by that provider."
+    };
+  }
   const denied = httpStatus === 401 || httpStatus === 403 ||
     /401|403|unauthori[sz]ed|forbidden|api key|credential/i.test(message);
   return {

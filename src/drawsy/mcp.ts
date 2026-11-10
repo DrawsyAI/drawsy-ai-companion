@@ -296,8 +296,52 @@ if (surfaceKind === "canvas" || surfaceKind === "presentation") {
     "control_canvas",
     {
       description:
-        "Use this for every Draw mode canvas change. It drives Drawsy's own canvas pointer handlers, so click and drag gestures draw, select, move, resize, erase, pan, and fill using the active tool. Read read_current_canvas first; use its viewport scene coordinates. set_tool selects a native canvas tool, set_style changes current drawing settings or the selected elements, and type_text places editable text with the Text tool. gesture sends a curved path; drag sends one straight path; draw_freehand selects Pencil for an organic stroke. A pointer action is one press-move-release sequence and is visible while it runs. This controls only the attached Drawsy canvas; it does not access browser tabs or other pages. Image insertion needs an image asset and is not available through this pointer tool.",
+        "Use this for every Draw mode canvas change. It drives Drawsy's own canvas pointer handlers, so click and drag gestures draw, select, move, resize, erase, pan, and fill using the active tool. Read read_current_canvas for scene bounds, viewport zoom and screen size. set_viewport changes the private working zoom and scene center. set_tool selects a native canvas tool, set_style changes current drawing settings or the selected elements, and type_text places editable text with the Text tool. gesture sends a pointer path through the active tool, whose native behavior determines the geometry; drag is one completed drag; draw_freehand selects Pencil for a continuous stroke. Results report activeTool because a tool can return to Selection after release. A pointer action is one press-move-release sequence and is visible while it runs. This controls only the attached Drawsy canvas; it does not access browser tabs or other pages. Image insertion needs an image asset and is not available through this pointer tool.",
       inputSchema: z.discriminatedUnion("action", [
+        z.object({
+          action: z.literal("set_viewport"),
+          zoom: z.number().finite().min(0.1).max(30).describe("Zoom factor, where 1 means 100%."),
+          center: z.tuple([
+            z.number().finite().min(-1_000_000).max(1_000_000),
+            z.number().finite().min(-1_000_000).max(1_000_000)
+          ]).optional().describe("Center in scene coordinates; defaults to the current center.")
+        }).strict(),
+        z.object({
+          action: z.literal("set_arrowhead"),
+          end: z.enum(["start", "end"]),
+          arrowhead: z.string().regex(/^[a-z_]{1,64}$/).nullable()
+        }).strict(),
+        z.object({
+          action: z.literal("erase_area"),
+          elementIds: z.array(z.string().min(1).max(128)).min(1).max(100),
+          points: z.array(z.tuple([
+            z.number().finite().min(-1_000_000).max(1_000_000),
+            z.number().finite().min(-1_000_000).max(1_000_000)
+          ])).min(2).max(512),
+          size: z.number().int().min(8).max(64)
+        }).strict(),
+        z.object({
+          action: z.literal("set_arrow_type"),
+          arrowType: z.enum(["sharp", "round", "elbow"])
+        }).strict(),
+        z.object({
+          action: z.literal("erase_objects"),
+          elementIds: z.array(z.string().min(1).max(128)).min(1).max(100)
+        }).strict(),
+        z.object({
+          action: z.literal("set_eraser"),
+          mode: z.enum(["area", "object"]),
+          size: z.number().int().min(8).max(64).optional()
+        }).strict(),
+        z.object({
+          action: z.literal("insert_library"),
+          source: z.literal("public").optional(),
+          packId: z.string().trim().min(1).max(256),
+          itemId: z.string().trim().min(1).max(256),
+          x: z.number().finite().min(-1_000_000).max(1_000_000),
+          y: z.number().finite().min(-1_000_000).max(1_000_000),
+          operationId: z.string().trim().min(1).max(128)
+        }).strict(),
         z.object({
           action: z.literal("click"),
           x: z.number().finite().min(-1_000_000).max(1_000_000),
@@ -330,7 +374,8 @@ if (surfaceKind === "canvas" || surfaceKind === "presentation") {
             "embeddable",
             "laser",
             "bucketfill"
-          ])
+          ]),
+          shapeKind: z.string().trim().min(1).max(128).optional()
         }).strict(),
         z.object({
           action: z.literal("drag"),

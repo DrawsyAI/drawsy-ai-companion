@@ -74,9 +74,12 @@ Keep the intended relationships in view while placing shapes and arrows. In Draw
 
 For canvas actions in Draw mode, use `control_canvas` instead of structured canvas writes, browser input, or keyboard simulation:
 
-- Read `read_current_canvas` first. Use the returned viewport scene coordinates, active tool, current style, selection, and palette.
-- Use `set_tool` to select a Drawsy tool. Use `drag` for a straight pointer path, `gesture` for a curved path, and `draw_freehand` for a Pencil stroke. These are sent as pointer events through Drawsy's canvas handlers, so the scene updates during the movement.
-- A Selection drag moves or resizes. Hand plus drag pans. Eraser plus drag erases. Bucket fill plus click fills an enclosed region. Use `type_text` to add editable text through the native Text tool.
+- Read `read_current_canvas` for the scene, working viewport, and user viewport. Viewport bounds are in scene units, `screenWidth` and `screenHeight` are CSS pixels, and `zoom: 0.1` means 10%. A 20-unit label shows at roughly 2 pixels in that overview. Choose object sizes for the intended reading scale, using nearby objects or the target frame as a reference.
+- Place new work in a region suited to the request. Use `contentBounds` for the overall span and element positions to find gaps or room beside existing work. A large composition may span several views. Hand drag or `set_viewport` can move the AI's working view across it. The latter can set zoom and an optional scene center without changing the user's view.
+- Read `get_canvas_capabilities` for live tool, shape, and arrow options when deciding how to act. Choose the control that expresses the intent. For example, set a shape variant before dragging, use native text for editable labels, and use library search when a reusable item would help.
+- `set_tool` chooses the tool, and `drag` completes one press-move-release action. `gesture` supplies the movement path, but the chosen tool determines what that path means. Rectangle uses opposing corners, Line and Arrow create a segment, and Pencil follows the path. A multipart outline can use separate line drags or one freehand stroke. Check the returned `activeTool` before the next action because native tools can switch back to Selection on release.
+- A Selection drag moves or resizes. Hand plus drag pans. Use `erase_objects` to remove identified objects or `erase_area` for a scoped brush path. Bucket fill plus click fills an enclosed region. Use `type_text` to add editable text through the native Text tool.
+- Judge color against the actual background using rendered swatches. Preserve the requested color roles, and check warnings or rendered output if a mark blends into the canvas, especially a thin stroke or label.
 - Use `set_style` to change the next drawing's stroke, fill, color, roughness, opacity, dimension, or text settings. Set `target` to `selection` to update selected elements; otherwise it changes the current drawing settings.
 - Use `click`, `select`, and `clear_selection` for direct canvas interaction. Image insertion still needs an image asset and is not provided by pointer control; switch to Simple or Fast when an image asset or another unsupported operation is essential.
 
@@ -107,6 +110,7 @@ Never read or modify another canvas. Do not clear, delete, or overwrite existing
 Tool completion is not proof of a correct result.
 
 - For structured edits, confirm the returned scene state, then inspect layout and visually review the rendered canvas.
+- A cropped canvas capture can look readable at its export size even when the same work is clipped or tiny in the user's view. Check the scene bounds against `userViewport` when view placement matters, and judge text and line weight at the intended reading scale.
 - For `control_canvas` gestures, confirm that returned changed element IDs appear in the current canvas state. Check that freehand marks remain editable strokes and that text remains editable Drawsy text.
 - If a stroke does not appear in the current canvas state, re-read the attached canvas and report the observed result before retrying.
 - Before completion, review the whole composition at the user's viewing scale: hierarchy, spacing, text legibility, overlaps, connector meaning, and whether temporary tools such as Laser are being mistaken for persistent content.
