@@ -1509,7 +1509,9 @@ export class CodexAppServer {
       : tags.skills;
     const turnPlugins = tags.plugins;
     const nativeChromeRequested =
-      !fastMode && NATIVE_CHROME_INTENT.test(message);
+      !fastMode && NATIVE_CHROME_INTENT.test(
+        extractUserPrompt(message).replace(/@Tab \[[^\]]*\]/g, "")
+      );
     const preferredNativeChromePlugin = nativeChromeRequested
       ? controls.plugins.find(
           (plugin) => plugin.id === this.nativeChromePluginId

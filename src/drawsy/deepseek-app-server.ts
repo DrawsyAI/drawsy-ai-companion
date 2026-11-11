@@ -1,3 +1,4 @@
+import { extractUserPrompt } from "./conversation-history.js";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
@@ -330,7 +331,7 @@ export class DeepSeekAppServer {
     this.turnActive = true; this.assistantText = ""; this.assistantId = randomUUID();
     this.turnToken = randomUUID(); this.turnResultStatus = "completed"; this.turnResultError = undefined;
     const turnToken = this.turnToken;
-    this.history.push({ id: randomUUID(), role: "user", text: message });
+    this.history.push({ id: randomUUID(), role: "user", text: extractUserPrompt(message) });
     await writeFile(this.markerPath, this.session.nativeSessionId, { mode: 0o600 });
     try {
       this.turnEnd = (status, error) => {

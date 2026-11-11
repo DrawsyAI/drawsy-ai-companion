@@ -1079,6 +1079,16 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     assert.equal(resumed.resumed, true);
     session.token = resumed.token;
 
+    const browserTabsUrl = `${bridge.address}/v1/sessions/${session.id}/browser-tabs`;
+    const unauthorizedTabs = await fetch(browserTabsUrl, { headers: { origin } });
+    assert.equal(unauthorizedTabs.status, 401);
+    const unapprovedTabs = await fetch(browserTabsUrl, {
+      headers: { origin, authorization: `Bearer ${session.token}` }
+    });
+    assert.equal(unapprovedTabs.status, 200);
+    assert.deepEqual(await unapprovedTabs.json(), { tabs: null });
+
+
     const conflictingResume = await fetch(`${bridge.address}/v1/sessions`, {
       method: "POST",
       headers,
