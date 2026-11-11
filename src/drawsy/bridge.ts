@@ -1,3 +1,5 @@
+import { withBrowserTabContext } from "./conversation-history.js";
+import { BrowserTabs } from "./browser-tabs.js";
 import { readCodexPluginDetails } from "./codex-marketplace.js";
 import { readMarketplace, mutateMarketplace } from "./marketplace.js";
 import { readCodexProviderLimits } from "./codex-provider-limits.js";
@@ -500,6 +502,7 @@ export const createDrawsyBridge = (
     options.version || process.env.DRAWSY_COMPANION_VERSION || "0.1.0";
   const selections = new Map<string, FolderSelection>();
   const sessions = new Map<string, Session>();
+  const browserTabs = new BrowserTabs();
   const conversationSessions = new Map<string, Session>();
   const conversationStartLocks = new Map<string, Promise<void>>();
   const localConversations = new LocalConversationStore();
@@ -1827,6 +1830,24 @@ export const createDrawsyBridge = (
         return;
       }
 
+      const browserTabsMatch = url.pathname.match(/^\/v1\/sessions\/([^/]+)\/browser-tabs$/);
+      if ((request.method === "GET" || request.method === "POST") && browserTabsMatch) {
+        const session = publicSession(request, response, decodeURIComponent(browserTabsMatch[1]!));
+        if (!session) return;
+        response.setHeader("cache-control", "no-store");
+        try {
+          const tabs = await browserTabs.list(session, request.method === "POST");
+          json(response, 200, { tabs });
+        } catch (error) {
+          throw new BridgeRequestError(
+            409,
+            "browser_tabs_unavailable",
+            error instanceof Error ? error.message : "Chrome tabs are unavailable."
+          );
+        }
+        return;
+      }
+
       if (request.method === "POST" && url.pathname === "/v1/folders/pick") {
         const folder = await (options.folderPicker ?? pickFolder)();
         const selection: FolderSelection = {
@@ -2413,8 +2434,25 @@ export const createDrawsyBridge = (
         session.activeGenerationMode = generationMode;
         session.turnStartPending = true;
         try {
+          let prompt = message;
+          if (body.browserTabIds !== undefined) {
+            const ids = body.browserTabIds;
+            if (!Array.isArray(ids) || ids.length < 1 || ids.length > 3 ||
+                ids.some((id) => typeof id !== "string")) {
+              throw new BridgeRequestError(400, "browser_tabs_invalid", "Choose up to three browser tabs.");
+            }
+            try {
+              prompt = withBrowserTabContext(message, await browserTabs.snapshots(session, ids));
+            } catch (error) {
+              throw new BridgeRequestError(
+                409,
+                "browser_tab_unavailable",
+                error instanceof Error ? error.message : "Chrome could not read the browser tab."
+              );
+            }
+          }
           await session.agent.startTurn(
-            message,
+            prompt,
             {
               skills: parsePromptTags(body.skills, "skills"),
               plugins: parsePromptTags(body.plugins, "plugins")
@@ -2734,6 +2772,7 @@ export const createDrawsyBridge = (
       }),
     close: () =>
       new Promise<void>((resolve, reject) => {
+        browserTabs.close();
         clearInterval(cleanup);
         for (const session of [...sessions.values()]) closeSession(session);
         server.close((error) => (error ? reject(error) : resolve()));
