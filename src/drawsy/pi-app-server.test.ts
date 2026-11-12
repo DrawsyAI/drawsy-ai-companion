@@ -10,7 +10,9 @@ import {
   PiRpcProcess,
   ompHostToolDefinitions,
   ompRpcArguments,
+  ompSubagentUpdate,
   ompTurnFailure,
+  piExampleSubagentUpdates,
   piRpcArguments,
   validatePiSessionId
 } from "./pi-app-server.js";
@@ -51,7 +53,8 @@ test("OMP RPC uses the native runtime configuration and retains full approval mo
     extensionPath: "/app/dist/drawsy/pi-workspace-extension.js",
     systemPrompt: "Drawsy OMP harness"
   });
-  assert.equal(args[args.indexOf("--mode") + 1], "rpc");
+  assert.equal(args[args.indexOf("--mode") + 1], "rpc-ui");
+  assert.ok(args.includes("--no-ui"));
   assert.ok(args.includes("--approval-mode"));
   assert.ok(args.includes("/app/dist/drawsy/pi-workspace-extension.js"));
   for (const flag of ["--no-extensions", "--no-context-files", "--no-rules", "--no-skills", "--no-tools"]) {
@@ -81,6 +84,83 @@ test("OMP provider failures use the active OMP login in their message", () => {
   assert.deepEqual(ompTurnFailure({ error: { message: "Temporary model failure" } }), {
     message: "OMP could not complete this request. Check the selected provider login and model."
   });
+});
+
+test("OMP subagent lifecycle and progress frames normalize to Drawsy updates", () => {
+  assert.deepEqual(ompSubagentUpdate({
+    id: "worker-1",
+    agent: "researcher",
+    description: "Compare the two APIs",
+    status: "started",
+    index: 1
+  }, "lifecycle"), {
+    id: "worker-1",
+    label: "researcher",
+    status: "running",
+    detail: "Compare the two APIs"
+  });
+  assert.deepEqual(ompSubagentUpdate({
+    index: 1,
+    agent: "researcher",
+    progress: { id: "worker-1", agent: "researcher", task: "Check upstream API behavior", status: "running", description: "Reading docs", output: "Found one source." }
+  }, "progress"), {
+    id: "worker-1",
+    label: "researcher",
+    task: "Check upstream API behavior",
+    status: "running",
+    detail: "Reading docs",
+    activity: "Reading docs",
+    output: "Found one source."
+  });
+  assert.deepEqual(ompSubagentUpdate({ id: "worker-1", status: "aborted" }, "lifecycle"), {
+    id: "worker-1",
+    status: "interrupted"
+  });
+  assert.equal(ompSubagentUpdate({ status: "started" }, "lifecycle"), null);
+});
+
+test("OMP forwards only native child tool and assistant message activity", () => {
+  const events: unknown[] = [];
+  const server = Object.assign(Object.create(PiAppServer.prototype), {
+    session: { engine: "omp" },
+    observedOmpSubagentOutputs: new Map(),
+    observedOmpSubagentStatuses: new Map([["worker", "running"]]),
+    emit: (event: unknown) => events.push(event)
+  }) as { handleEvent(event: Record<string, unknown>): void };
+  server.handleEvent({ type: "subagent_event", payload: { id: "worker", event: { type: "tool_execution_start", toolName: "read" } } });
+  server.handleEvent({ type: "subagent_event", payload: { id: "worker", event: { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Checking " } } } });
+  server.handleEvent({ type: "subagent_event", payload: { id: "worker", event: { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "the file." } } } });
+  assert.deepEqual(events, [
+    { type: "subagent.updated", data: { id: "worker", status: "running", activity: "Running read" } },
+    { type: "subagent.updated", data: { id: "worker", status: "running", output: "Checking " } },
+    { type: "subagent.updated", data: { id: "worker", status: "running", output: "Checking the file." } }
+  ]);
+});
+
+test("Pi example subagent details are observed only in the documented result shape", () => {
+  const details = {
+    mode: "parallel",
+    agentScope: "user",
+    projectAgentsDir: null,
+    results: [{
+      agent: "reviewer",
+      agentSource: "user",
+      task: "Check the patch",
+      exitCode: 0,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "Reviewed the patch." }] }],
+      stderr: "",
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 }
+    }]
+  };
+  assert.deepEqual(piExampleSubagentUpdates("tool-1", { details }, false), [{
+    id: "tool-1:1",
+    label: "reviewer",
+    task: "Check the patch",
+    status: "running",
+    output: "Reviewed the patch."
+  }]);
+  assert.equal(piExampleSubagentUpdates("tool-1", { details }, true)[0]?.status, "completed");
+  assert.equal(piExampleSubagentUpdates("tool-1", { details: { mode: "parallel", results: [] } }, false).length, 0);
 });
 
 test("OMP reports unsupported models without blaming provider login", () => {
@@ -128,7 +208,7 @@ process.stdin.on("data", (chunk) => {
   const rpc = new PiRpcProcess("omp", (event) => {
     events.push(event);
     if (event.type === "test_large_event") resolveEvent(event);
-  }, () => undefined, () => undefined);
+  }, () => undefined, () => undefined, () => true, () => undefined);
 
   try {
     rpc.start(process.execPath, [scriptPath], { cwd: root, env: process.env, detached: false });

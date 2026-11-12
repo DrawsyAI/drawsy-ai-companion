@@ -34,6 +34,7 @@ import {
   type AiResourceId,
   type BridgeEvent,
   type DrawsySurfaceKind,
+  type DrawsySubagent,
   type JsonObject
 } from "./protocol.js";
 import { extractUserPrompt } from "./conversation-history.js";
@@ -80,6 +81,12 @@ type OpenCodeEvent = {
   type?: unknown;
   properties?: unknown;
   data?: unknown;
+};
+
+type OpenCodeQuestion = {
+  sessionId: string;
+  formId: string;
+  questions: Array<{ id: string; fieldKey: string; multiple: boolean; options: Array<{ label: string; value: string }> }>;
 };
 
 const OPEN_CODE_READY_TIMEOUT_MS = 20_000;
@@ -742,6 +749,14 @@ export class OpenCodeAppServer {
   private eventsAbort: AbortController | null = null;
   private readonly partKinds = new Map<string, string>();
   private readonly knownAssistantMessageIds = new Set<string>();
+  private readonly pendingQuestions = new Map<string, OpenCodeQuestion>();
+  private readonly activeSubagents = new Map<string, DrawsySubagent>();
+  private readonly backgroundSubagentCalls = new Set<string>();
+  private readonly nativeToolNames = new Map<string, string>();
+  private readonly nativeToolInputs = new Map<string, JsonObject>();
+  private readonly subagentSessions = new Map<string, string>();
+  private readonly subagentOutputs = new Map<string, string>();
+  private readonly subagentChildTerminalStatuses = new Map<string, DrawsySubagent["status"]>();
   private activeAssistantMessageId: string | null = null;
   private usageModel: { messageId: string; model: string; provider: string } | null = null;
   private readonly apiKeyProviderIds = new Set<string>();
@@ -1760,6 +1775,19 @@ export class OpenCodeAppServer {
       eventSessionId &&
       eventSessionId !== this.openCodeSessionId
     ) {
+      this.handleSubagentChildEvent(type, properties, eventSessionId);
+      return;
+    }
+    if (type === "form.created") {
+      this.handleQuestionForm(properties.form);
+      return;
+    }
+    if (type === "form.replied" || type === "form.cancelled") {
+      const requestId = stringValue(toRecord(properties.form).id) || stringValue(properties.id);
+      const pending = requestId ? this.pendingQuestions.get(requestId) : undefined;
+      if (requestId && pending && this.pendingQuestions.delete(requestId)) {
+        this.emit({ type: "question.resolved", data: { turnId: requestId, requestId } });
+      }
       return;
     }
     if (
@@ -1887,6 +1915,88 @@ export class OpenCodeAppServer {
     }
   }
 
+  async answerQuestion(requestId: string, answers: Record<string, string[]>) {
+    if (!this.openCodeSessionId) return false;
+    const pending = this.pendingQuestions.get(requestId);
+    if (!pending || pending.sessionId !== this.openCodeSessionId) return false;
+    const answer: Record<string, string | string[]> = {};
+    for (const question of pending.questions) {
+      const selected = answers[question.id] || [];
+      if (!selected.length) continue;
+      const values = selected.map((label) => question.options.find((option) => option.label === label)?.value ?? label);
+      answer[question.fieldKey] = question.multiple ? values : values[0]!;
+    }
+    await this.request<void>(
+      `/api/session/${encodeURIComponent(pending.sessionId)}/form/${encodeURIComponent(pending.formId)}/reply`,
+      { method: "POST", body: JSON.stringify({ answer }) }
+    );
+    this.pendingQuestions.delete(requestId);
+    return true;
+  }
+
+  async dismissQuestion(requestId: string) {
+    if (!this.openCodeSessionId) return false;
+    const pending = this.pendingQuestions.get(requestId);
+    if (!pending || pending.sessionId !== this.openCodeSessionId) return false;
+    await this.request<void>(
+      `/api/session/${encodeURIComponent(pending.sessionId)}/form/${encodeURIComponent(pending.formId)}`,
+      { method: "DELETE" }
+    );
+    this.pendingQuestions.delete(requestId);
+    return true;
+  }
+
+  private handleQuestionForm(value: unknown) {
+    const form = toRecord(value);
+    const metadata = toRecord(form.metadata);
+    const requestId = stringValue(form.id);
+    const sessionId = stringValue(form.sessionID);
+    const incoming = Array.isArray(form.fields) ? form.fields : [];
+    if (metadata.kind !== "question" || !requestId || !sessionId || sessionId !== this.openCodeSessionId || !incoming.length || this.pendingQuestions.has(requestId)) return;
+    const normalized = incoming.flatMap((candidate, index) => {
+      const field = toRecord(candidate);
+      if (field.type !== "string" && field.type !== "multiselect") return [];
+      const prompt = stringValue(field.description) || stringValue(field.title);
+      if (!prompt) return [];
+      const options = Array.isArray(field.options) ? field.options.flatMap((option) => {
+        const item = toRecord(option);
+        const label = stringValue(item.label) || stringValue(item.value);
+        return label ? [{ label, value: stringValue(item.value) || label, ...(stringValue(item.description) ? { description: stringValue(item.description) } : {}) }] : [];
+      }) : [];
+      return [{
+        id: `${requestId}:${index}`,
+        ...(stringValue(field.title) ? { header: stringValue(field.title) } : {}),
+        question: prompt,
+        ...(options.length ? { options } : {}),
+        ...(field.type === "multiselect" ? { multiSelect: true } : {}),
+        allowCustom: options.length === 0 || field.custom !== false,
+        fieldKey: stringValue(field.key) || `q${index}`
+      }];
+    });
+    if (!normalized.length) return;
+    this.pendingQuestions.set(requestId, {
+      sessionId,
+      formId: requestId,
+      questions: normalized.map(({ id, fieldKey, multiSelect, options }) => ({
+        id,
+        fieldKey,
+        multiple: multiSelect === true,
+        options: (options || []).map(({ label, value }) => ({ label, value }))
+      }))
+    });
+    this.emit({
+      type: "question.request",
+      data: {
+        turnId: requestId,
+        requestId,
+        questions: normalized.map(({ fieldKey: _fieldKey, options, ...question }) => ({
+          ...question,
+          ...(options?.length ? { options: options.map(({ label, value: _value, ...option }) => ({ label, ...option })) } : {})
+        }))
+      }
+    });
+  }
+
   private handleV2Event(type: string, properties: JsonObject) {
     const eventSessionId = stringValue(properties.sessionID);
     if (
@@ -1964,7 +2074,19 @@ export class OpenCodeAppServer {
         stringValue(properties.name) ||
         stringValue(toolValue.name) ||
         stringValue(metadata.name) ||
+        this.nativeToolNames.get(callId) ||
         "tool";
+      if (type === "session.tool.input.started" && name !== "tool") {
+        this.nativeToolNames.set(callId, name);
+      }
+      const taskTool = name === "subagent" || name === "task";
+      const taskInput = isRecord(properties.input)
+        ? properties.input
+        : this.nativeToolInputs.get(callId) || {};
+      if (taskTool && type === "session.tool.called") {
+        this.nativeToolInputs.set(callId, taskInput);
+        if (taskInput.background === true) this.backgroundSubagentCalls.add(callId);
+      }
       const status =
         type === "session.tool.success"
           ? "completed"
@@ -1982,6 +2104,37 @@ export class OpenCodeAppServer {
             : {})
         }
       });
+      if (taskTool && type === "session.tool.progress") {
+        this.updateSubagentFromTool({
+          id: callId,
+          status: "running",
+          input: taskInput,
+          metadata
+        });
+      } else if (taskTool && (type === "session.tool.success" || type === "session.tool.failed")) {
+        const childSessionId =
+          stringValue(metadata.sessionID) || stringValue(metadata.sessionId);
+        const background = this.backgroundSubagentCalls.has(callId) || taskInput.background === true;
+        const childAlreadyTracked = childSessionId
+          ? this.subagentSessions.get(childSessionId) === callId
+          : [...this.subagentSessions.values()].includes(callId);
+        const completion =
+          type === "session.tool.failed"
+            ? metadata.interrupted === true ? "interrupted" : "failed"
+            : metadata.status === "completed"
+              ? "completed"
+              : metadata.status === "running" || childAlreadyTracked
+                ? "running"
+                : background ? "unknown" : "completed";
+        this.updateSubagentFromTool({
+          id: callId,
+          status: completion,
+          input: taskInput,
+          metadata
+        });
+        this.nativeToolInputs.delete(callId);
+        this.nativeToolNames.delete(callId);
+      }
       return;
     }
     if (type === "session.execution.failed" || type === "session.step.failed") {
@@ -2044,6 +2197,25 @@ export class OpenCodeAppServer {
     const failed = /(error|fail)/i.test(statusText);
     const done = /(complete|success|done)/i.test(statusText);
     const tool = stringValue(part.tool) || stringValue(part.name) || "tool";
+    if (tool === "task" || tool === "subagent") {
+      const taskInput = toRecord(state.input);
+      const taskId = stringValue(part.callID) || partId;
+      const background = taskInput.background === true || this.backgroundSubagentCalls.has(taskId);
+      this.updateSubagentFromTool({
+        id: taskId,
+        status: statusText === "running" || statusText === "streaming"
+          ? "running"
+          : statusText === "completed"
+            ? background ? "unknown" : "completed"
+            : statusText === "interrupted" || toRecord(state.metadata).interrupted === true
+              ? "interrupted"
+              : statusText === "error" || statusText === "failed"
+                ? "failed"
+                : "unknown",
+        input: taskInput,
+        metadata: state.metadata
+      });
+    }
     this.emit({
       type: "tool.status",
       data: {
@@ -2055,5 +2227,100 @@ export class OpenCodeAppServer {
           : {})
       }
     });
+  }
+
+  private handleSubagentChildEvent(type: string, properties: JsonObject, sessionId: string) {
+    const callId = this.subagentSessions.get(sessionId);
+    if (!callId) return;
+    const previous = this.activeSubagents.get(callId);
+    if (type === "session.step.started") {
+      const modelInfo = toRecord(properties.model);
+      const model = stringValue(modelInfo.id);
+      const modelProvider = stringValue(modelInfo.providerID);
+      if (model || modelProvider) {
+        this.emit({ type: "subagent.updated", data: {
+          id: callId, status: "running",
+          ...(model ? { model } : {}),
+          ...(modelProvider ? { modelProvider } : {})
+        } });
+      }
+      return;
+    }
+    if (type === "session.text.delta") {
+      const delta = stringValue(properties.delta);
+      if (delta) {
+        const output = `${this.subagentOutputs.get(callId) || ""}${delta}`.slice(-12000);
+        this.subagentOutputs.set(callId, output);
+        this.emit({ type: "subagent.updated", data: { ...previous, id: callId, status: "running", output } });
+      }
+      return;
+    }
+    if (type.startsWith("session.tool.")) {
+      const tool = stringValue(properties.name) || stringValue(toRecord(properties.tool).name);
+      if (tool) this.emit({ type: "subagent.updated", data: { ...previous, id: callId, status: "running", activity: `${tool} (${type.slice("session.tool.".length)})`.slice(0, 500) } });
+      return;
+    }
+    const outcome = stringValue(properties.outcome);
+    const status =
+      type === "session.execution.succeeded" ||
+      (type === "session.idle" && outcome === "succeeded")
+        ? "completed"
+        : type === "session.execution.failed" ||
+          (type === "session.idle" && outcome === "failed")
+          ? "failed"
+          : type === "session.execution.interrupted" ||
+            (type === "session.idle" && outcome === "interrupted")
+            ? "interrupted"
+            : null;
+    if (!status) return;
+    this.subagentChildTerminalStatuses.set(callId, status);
+    this.updateSubagentFromTool({
+      id: callId,
+      status,
+      input: this.nativeToolInputs.get(callId)
+    });
+    this.subagentSessions.delete(sessionId);
+  }
+
+  private updateSubagentFromTool(input: {
+    id: string;
+    status: DrawsySubagent["status"];
+    input?: unknown;
+    metadata?: unknown;
+  }) {
+    if (!input.id) return;
+    const previous = this.activeSubagents.get(input.id);
+    const status = this.subagentChildTerminalStatuses.get(input.id) || input.status;
+    if (status === "unknown" && !previous) return;
+    const toolInput = toRecord(input.input);
+    const metadata = toRecord(input.metadata);
+    const childSessionId =
+      stringValue(metadata.sessionID) || stringValue(metadata.sessionId);
+    if (childSessionId && status === "running") {
+      this.subagentSessions.set(childSessionId, input.id);
+    } else if (status !== "running") {
+      for (const [sessionId, callId] of this.subagentSessions) {
+        if (callId === input.id) this.subagentSessions.delete(sessionId);
+      }
+    }
+    if (status === "running" && toolInput.background === true) {
+      this.backgroundSubagentCalls.add(input.id);
+    } else if (status !== "running") {
+      this.backgroundSubagentCalls.delete(input.id);
+    }
+    const label = stringValue(toolInput.agent) || previous?.label;
+    const task = stringValue(toolInput.description) || previous?.task;
+    const detail = stringValue(metadata.title) || previous?.detail;
+    const update: DrawsySubagent = {
+      id: input.id,
+      ...(label ? { label } : {}),
+      ...(task ? { task } : {}),
+      status,
+      ...(detail ? { detail } : {})
+    };
+    if (previous && JSON.stringify(previous) === JSON.stringify(update)) return;
+    this.emit({ type: "subagent.updated", data: update });
+    this.activeSubagents.set(input.id, update);
+    if (status !== "running") this.backgroundSubagentCalls.delete(input.id);
   }
 }

@@ -1,3 +1,4 @@
+import { QUESTION_TOOL_TIMEOUT_MS } from "./question-tool.js";
 import { homedir } from "node:os";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -33,6 +34,8 @@ import {
   type AgentSettingsPatch,
   type AiResourceId,
   type BridgeEvent,
+  type DrawsySubagent,
+  type DrawsyQuestionRequest,
   type DrawsySurfaceKind,
   type JsonObject,
   type AgentConnectorSource
@@ -91,6 +94,92 @@ const sleep = (milliseconds: number) => new Promise<void>((resolve) => setTimeou
 const record = (value: unknown): JsonObject => isRecord(value) ? value : {};
 const string = (value: unknown) => typeof value === "string" ? value : "";
 const array = (value: unknown) => Array.isArray(value) ? value : [];
+export const piExampleSubagentUpdates = (
+  toolCallId: string,
+  value: unknown,
+  terminal: boolean
+): DrawsySubagent[] => {
+  const details = record(record(value).details);
+  if (details.mode !== "single" && details.mode !== "parallel" && details.mode !== "chain") return [];
+  if (!Array.isArray(details.results) ||
+      (details.agentScope !== "user" && details.agentScope !== "project" && details.agentScope !== "both") ||
+      !(typeof details.projectAgentsDir === "string" || details.projectAgentsDir === null)) return [];
+  const results = details.results;
+  return results.flatMap((raw, index): DrawsySubagent[] => {
+    const usage = record(record(raw).usage);
+    if (!isRecord(raw) || typeof raw.agent !== "string" || typeof raw.task !== "string" ||
+        (raw.agentSource !== "user" && raw.agentSource !== "project" && raw.agentSource !== "unknown") ||
+        typeof raw.exitCode !== "number" || !Array.isArray(raw.messages) || typeof raw.stderr !== "string" ||
+        ["input", "output", "cacheRead", "cacheWrite", "cost", "contextTokens", "turns"].some((key) => typeof usage[key] !== "number")) return [];
+    const result = raw as Record<string, unknown>;
+    const step = typeof result.step === "number" && Number.isFinite(result.step) ? result.step : index + 1;
+    const id = `${toolCallId}:${step}`;
+    const stopReason = string(result.stopReason);
+    const progressStatus = details.mode === "chain" && index < results.length - 1 ? "completed" : "running";
+    const status: DrawsySubagent["status"] = !terminal
+      ? progressStatus
+      : stopReason === "aborted"
+        ? "interrupted"
+        : result.exitCode !== 0 || stopReason === "error"
+          ? "failed"
+          : "completed";
+    const detail = string(result.errorMessage) || stopReason;
+    const messages = array(result.messages);
+    const lastAssistant = record(messages.filter((message) => record(message).role === "assistant").at(-1));
+    const model = string(lastAssistant.model) || string(result.model);
+    const modelProvider = string(lastAssistant.provider);
+    const output = messages.flatMap((message) => {
+      const item = record(message);
+      if (item.role !== "assistant" || !Array.isArray(item.content)) return [];
+      return item.content.flatMap((part) => {
+        const block = record(part);
+        return block.type === "text" ? [string(block.text)] : [];
+      });
+    }).join("").slice(-12000);
+    return [{
+      id,
+      label: string(result.agent),
+      task: string(result.task),
+      status,
+      ...(detail ? { detail } : {}),
+      ...(output ? { output } : {}),
+      ...(model ? { model } : {}),
+      ...(modelProvider ? { modelProvider } : {})
+    }];
+  });
+};
+
+const subagentStatus = (value: unknown): DrawsySubagent["status"] => {
+  if (value === "started" || value === "pending" || value === "running" || value === "active") return "running";
+  if (value === "completed") return "completed";
+  if (value === "failed" || value === "error") return "failed";
+  if (value === "aborted" || value === "interrupted") return "interrupted";
+  return "unknown";
+};
+
+export const ompSubagentUpdate = (value: unknown, kind: "snapshot" | "lifecycle" | "progress"): DrawsySubagent | null => {
+  const payload = record(value);
+  const progress = record(payload.progress);
+  const id = string(kind === "progress" ? progress.id : payload.id);
+  if (!id) return null;
+  const task = string(payload.task) || string(progress.task) || string(payload.assignment) || string(progress.assignment);
+  const detail = string(payload.description) || string(progress.description);
+  const activity = kind === "progress"
+    ? string(progress.activity) || string(progress.description)
+    : string(payload.activity);
+  const output = string(kind === "progress" ? progress.output : payload.output);
+  const label = string(payload.agent) || string(progress.agent);
+  return {
+    id,
+    ...(label ? { label } : {}),
+    ...(task ? { task } : {}),
+    status: subagentStatus(kind === "lifecycle" ? payload.status : kind === "progress" ? progress.status : payload.status),
+    ...(detail ? { detail } : {}),
+    ...(activity ? { activity: activity.slice(0, 500) } : {}),
+    ...(output ? { output: output.slice(-12000) } : {})
+  };
+};
+
 const thinkingDescriptions: Record<string, string> = {
   minimal: "Minimal reasoning",
   low: "Low reasoning",
@@ -150,7 +239,7 @@ export const ompRpcArguments = (input: {
   extensionPath: string;
   systemPrompt: string;
 }) => [
-  "--mode", "rpc",
+  "--mode", "rpc-ui",
   "--no-ui",
   "--session-dir", input.bootstrapSessionDir,
   "--extension", input.extensionPath,
@@ -236,6 +325,7 @@ export class PiRpcProcess {
   private child: ChildProcessWithoutNullStreams | null = null;
   private processGroupIsolated = false;
   private readonly pending = new Map<string, PendingRequest>();
+  private readonly pendingQuestions = new Map<string, { nativeId: string; method: string; turnId: string; timer?: NodeJS.Timeout }>();
   private readonly decoder = new StringDecoder("utf8");
   private stdoutBuffer = "";
   private stderrBuffer = "";
@@ -270,7 +360,9 @@ export class PiRpcProcess {
     private readonly engine: AgentEngine,
     private readonly emit: (event: RpcRecord) => void,
     private readonly onReady: () => void,
-    private readonly onExit: (error: Error) => void
+    private readonly onExit: (error: Error) => void,
+    private readonly onQuestion: (question: DrawsyQuestionRequest) => boolean,
+    private readonly onQuestionResolved: (requestId: string, turnId: string) => void
   ) {}
 
   get label() { return this.engine === "omp" ? "OMP" : "Pi"; }
@@ -341,9 +433,34 @@ export class PiRpcProcess {
     this.writeRecord(frame);
   }
 
+  answerQuestion(requestId: string, answers: Record<string, string[]>) {
+    const pending = this.pendingQuestions.get(requestId);
+    if (!pending) return false;
+    this.pendingQuestions.delete(requestId);
+    clearTimeout(pending.timer);
+    const values = answers.answer || [];
+    if (pending.method === "confirm") {
+      this.writeRecord({ type: "extension_ui_response", id: pending.nativeId, confirmed: values[0] === "Yes" });
+    } else {
+      this.writeRecord({ type: "extension_ui_response", id: pending.nativeId, value: values[0] ?? "" });
+    }
+    return true;
+  }
+
+  dismissQuestion(requestId: string) {
+    const pending = this.pendingQuestions.get(requestId);
+    if (!pending) return false;
+    this.pendingQuestions.delete(requestId);
+    clearTimeout(pending.timer);
+    this.writeRecord({ type: "extension_ui_response", id: pending.nativeId, cancelled: true });
+    return true;
+  }
+
   async stop() {
     if (this.closed) return;
     this.closed = true;
+    for (const pending of this.pendingQuestions.values()) clearTimeout(pending.timer);
+    this.pendingQuestions.clear();
     const child = this.child;
     this.child = null;
     this.rejectPending(new Error(`${this.label} RPC process closed.`));
@@ -438,7 +555,67 @@ export class PiRpcProcess {
       return;
     }
     if (value.type === "extension_ui_request" && typeof value.id === "string") {
-      this.writeRecord({ type: "extension_ui_response", id: value.id, cancelled: true });
+      const method = string(value.method);
+      if (method === "cancel") {
+        for (const [requestId, pending] of this.pendingQuestions) {
+          if (pending.nativeId !== value.targetId) continue;
+          this.pendingQuestions.delete(requestId);
+          clearTimeout(pending.timer);
+          this.onQuestionResolved(requestId, pending.turnId);
+          break;
+        }
+        return;
+      }
+      if (["notify", "setStatus", "setWidget", "setTitle", "set_editor_text"].includes(method)) return;
+      if (!["select", "input", "confirm", "editor"].includes(method)) {
+        this.writeRecord({ type: "extension_ui_response", id: value.id, cancelled: true });
+        return;
+      }
+      const requestId = randomUUID();
+      const turnId = randomUUID();
+      const secret = value.password === true || value.secret === true;
+      const title = string(value.title);
+      const prompt = string(value.prompt) || string(value.message) || title || "The agent needs your input.";
+      const prefill = typeof value.prefill === "string" ? value.prefill : typeof value.defaultValue === "string" ? value.defaultValue : undefined;
+      const placeholder = string(value.placeholder);
+      const timeoutMs = typeof value.timeout === "number" && Number.isSafeInteger(value.timeout) && value.timeout > 0
+        ? Math.min(value.timeout, 30 * 60 * 1000)
+        : undefined;
+      const options = Array.isArray(value.options)
+        ? value.options.flatMap((option, index) => {
+            if (typeof option !== "string") return [];
+            const description = string(record(array(value.optionDetails)[index]).description);
+            return [{ label: option, ...(description ? { description } : {}) }];
+          })
+        : method === "confirm" ? [{ label: "Yes" }, { label: "No" }] : [];
+      this.pendingQuestions.set(requestId, { nativeId: value.id, method, turnId });
+      const presented = this.onQuestion({
+        turnId,
+        requestId,
+        questions: [{
+          id: "answer",
+          ...(title ? { header: title } : {}),
+          question: prompt,
+          ...(options.length ? { options } : {}),
+          ...(method === "input" || method === "editor" ? { allowCustom: true, allowEmpty: true } : {}),
+          ...(secret ? { secret: true } : {}),
+          ...(method === "editor" ? { multiline: true } : {}),
+          ...(!secret && prefill !== undefined ? { defaultValue: prefill } : {}),
+          ...(placeholder ? { placeholder } : {})
+        }]
+      });
+      if (!presented) {
+        this.dismissQuestion(requestId);
+        return;
+      }
+      if (timeoutMs && this.engine === "pi") {
+        const pending = this.pendingQuestions.get(requestId)!;
+        pending.timer = setTimeout(() => {
+          if (!this.dismissQuestion(requestId)) return;
+          this.onQuestionResolved(requestId, turnId);
+        }, timeoutMs);
+        pending.timer.unref();
+      }
       return;
     }
     this.emit(value);
@@ -557,6 +734,9 @@ export class PiAppServer {
   private drawsyMcpClient: McpClient | null = null;
   private readonly hostToolNameToMcpName = new Map<string, string>();
   private readonly pendingHostToolCalls = new Map<string, AbortController>();
+  private readonly observedPiSubagents = new Map<string, Set<string>>();
+  private readonly observedOmpSubagentOutputs = new Map<string, string>();
+  private readonly observedOmpSubagentStatuses = new Map<string, DrawsySubagent["status"]>();
   private agentMetadata: AgentMetadata | null = null;
   private currentModel: PiModel | null = null;
   private currentThinkingLevel: string | null = null;
@@ -595,6 +775,14 @@ export class PiAppServer {
 
   get nativeSessionId() { return this.session.nativeSessionId; }
   get resumed() { return this.resumedNativeSession; }
+
+  answerQuestion(requestId: string, answers: Record<string, string[]>) {
+    return this.rpc?.answerQuestion(requestId, answers) ?? false;
+  }
+
+  dismissQuestion(requestId: string) {
+    return this.rpc?.dismissQuestion(requestId) ?? false;
+  }
 
   private async initialize() {
     if (this.engine === "pi") this.resumedNativeSession = await this.hasPersistedSession();
@@ -679,7 +867,10 @@ export class PiAppServer {
       const result = await client.callTool(
         { name: mcpName, arguments: record(event.arguments) },
         undefined,
-        { signal: controller.signal }
+        {
+          signal: controller.signal,
+          ...(mcpName === "ask_user_questions" ? { timeout: QUESTION_TOOL_TIMEOUT_MS + 15_000 } : {})
+        }
       );
       rpc.writeHostToolResult(id, {
         content: result.content,
@@ -727,7 +918,11 @@ export class PiAppServer {
     client = new PiRpcProcess(this.engine, childEmit, () => {
       this.drawsyToolsReady = true;
       this.updateMcpReadiness();
-    }, onExit);
+    }, onExit, (question) => {
+      if (!this.turnActive) return false;
+      this.emit({ type: "question.request", data: question });
+      return true;
+    }, (requestId, turnId) => this.emit({ type: "question.resolved", data: { requestId, turnId } }));
     this.rpc = client;
     client.start(binary, args, {
       cwd: this.folderPath,
@@ -743,6 +938,14 @@ export class PiAppServer {
       }, PI_READY_TIMEOUT_MS);
       this.resumedNativeSession = opened.resumed === true;
       await waitForPiRpc(client.ready, "Drawsy MCP tools did not become ready in OMP.");
+      const subagentSubscription = await client.request<{ level?: string }>("set_subagent_subscription", { level: "events" }).catch(() => null);
+      if (subagentSubscription?.level === "events") {
+        const snapshot = await client.request<{ subagents?: unknown[] }>("get_subagents").catch(() => null);
+        for (const subagent of array(snapshot?.subagents)) {
+          const update = ompSubagentUpdate(subagent, "snapshot");
+          if (update) this.emit({ type: "subagent.updated", data: update });
+        }
+      }
       await client.request("set_host_tools", { tools: ompToolDefinitions });
       this.ompHostToolsReady = true;
       this.updateMcpReadiness();
@@ -997,6 +1200,62 @@ export class PiAppServer {
 
   private handleEvent(event: RpcRecord) {
     const type = string(event.type);
+    if (this.engine === "omp" && (type === "subagent_lifecycle" || type === "subagent_progress")) {
+      const update = ompSubagentUpdate(event.payload, type === "subagent_lifecycle" ? "lifecycle" : "progress");
+      if (update) {
+        if (type === "subagent_lifecycle" && update.status === "running") {
+          this.observedOmpSubagentOutputs.delete(update.id);
+          this.observedOmpSubagentStatuses.delete(update.id);
+        }
+        this.observedOmpSubagentStatuses.set(update.id, update.status);
+        this.emit({ type: "subagent.updated", data: update });
+      }
+      return;
+    }
+    if (this.engine === "omp" && type === "subagent_event") {
+      const payload = record(event.payload);
+      const id = string(payload.id);
+      const childEvent = record(payload.event);
+      if (!id) return;
+      const assistantEvent = record(childEvent.assistantMessageEvent);
+      const subtype = string(assistantEvent.type);
+      const activity = childEvent.type === "tool_execution_start" && string(childEvent.toolName)
+        ? `Running ${string(childEvent.toolName)}`
+        : childEvent.type === "tool_execution_end" && string(childEvent.toolName)
+          ? `Finished ${string(childEvent.toolName)}`
+          : undefined;
+      if (activity) {
+        this.emit({ type: "subagent.updated", data: { id, status: this.observedOmpSubagentStatuses.get(id) || "running", activity: activity.slice(0, 500) } });
+      }
+      const delta = subtype === "text_delta" ? string(assistantEvent.delta) : "";
+      if (delta) {
+        const output = `${this.observedOmpSubagentOutputs.get(id) || ""}${delta}`.slice(-12000);
+        this.observedOmpSubagentOutputs.set(id, output);
+        this.emit({ type: "subagent.updated", data: { id, status: this.observedOmpSubagentStatuses.get(id) || "running", output } });
+      }
+      if (childEvent.type === "message_end") {
+        const message = record(childEvent.message);
+        const contents = message.role === "assistant" ? array(message.content).flatMap((item) => {
+          const content = record(item);
+          return content.type === "text" ? [string(content.text)] : [];
+        }).join("") : "";
+        if (message.role === "assistant") {
+          const model = string(message.model);
+          const modelProvider = string(message.provider);
+          const output = contents.slice(-12000);
+          if (output) this.observedOmpSubagentOutputs.set(id, output);
+          if (output || model || modelProvider) {
+            this.emit({ type: "subagent.updated", data: {
+              id, status: this.observedOmpSubagentStatuses.get(id) || "running",
+              ...(output ? { output } : {}),
+              ...(model ? { model } : {}),
+              ...(modelProvider ? { modelProvider } : {})
+            } });
+          }
+        }
+      }
+      return;
+    }
     if (type === "host_tool_call") {
       void this.handleHostToolCall(event);
       return;
@@ -1068,6 +1327,24 @@ export class PiAppServer {
       const itemId = string(event.toolCallId) || randomUUID();
       const complete = type === "tool_execution_end";
       const failed = complete && event.isError === true;
+      if (this.engine === "pi" && tool === "subagent") {
+        const result = complete ? event.result : event.partialResult;
+        const updates = piExampleSubagentUpdates(itemId, result, complete);
+        const observed = this.observedPiSubagents.get(itemId) ?? new Set<string>();
+        for (const update of updates) {
+          if (complete) observed.delete(update.id);
+          else observed.add(update.id);
+          this.emit({ type: "subagent.updated", data: update });
+        }
+        if (complete) {
+          for (const id of observed) {
+            this.emit({ type: "subagent.updated", data: { id, status: "unknown" } });
+          }
+          this.observedPiSubagents.delete(itemId);
+        } else if (observed.size) {
+          this.observedPiSubagents.set(itemId, observed);
+        }
+      }
       this.emit({
         type: "tool.status",
         data: {

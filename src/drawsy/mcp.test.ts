@@ -228,6 +228,7 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
       "add_image_from_file",
       "apply_canvas_changes",
+      "ask_user_questions",
       "attach_live_preview",
       "call_connected_meeting_tool",
       "capture_canvas_context",

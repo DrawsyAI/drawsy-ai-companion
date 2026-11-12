@@ -1,3 +1,4 @@
+import { QUESTION_TOOL_TIMEOUT_MS, questionToolInput, type QuestionToolReply } from "./question-tool.js";
 import { withBrowserTabContext } from "./conversation-history.js";
 import { BrowserTabs } from "./browser-tabs.js";
 import { readCodexPluginDetails } from "./codex-marketplace.js";
@@ -91,6 +92,8 @@ import {
   type LivePreviewRequest,
   type GenerationMode,
   type DrawsySurfaceKind,
+  type DrawsyQuestionRequest,
+  type DrawsySubagent,
 } from "./protocol.js";
 import { createConnectorBackendResolver } from "./connector-backend.js";
 
@@ -188,6 +191,10 @@ type Session = {
   folder: FolderSelection;
   clients: Set<ServerResponse>;
   canvasPending: Map<string, CanvasPending>;
+  pendingQuestions: Map<string, DrawsyQuestionRequest>;
+  subagents: Map<string, DrawsySubagent>;
+  toolQuestionReplies: Map<string, (reply: QuestionToolReply) => void>;
+  questionReplies: Set<string>;
   generatedImages: Array<{
     id: string;
     savedPath?: string;
@@ -199,6 +206,8 @@ type Session = {
   activeResourceTurn: AgentResourceTurn | null;
   generationMode: GenerationMode;
   activeGenerationMode: GenerationMode | null;
+  activeTurnId: string | null;
+  lastTurnStatus: { turnId: string; status: string; error?: string } | null;
   activeDrawMode: boolean;
   turnStartPending: boolean;
   connectorBackendUrl: URL | null;
@@ -206,6 +215,21 @@ type Session = {
   agent: CodexAppServer | OpenCodeAppServer | PiAppServer | DeepSeekAppServer;
   previewPort: number | null;
   touchedAt: number;
+};
+
+type InteractiveQuestionAgent = {
+  answerQuestion?: (requestId: string, answers: Record<string, string[]>) => boolean | Promise<boolean>;
+  dismissQuestion?: (requestId: string) => boolean | Promise<boolean>;
+};
+
+const settleQuestion = async (
+  agent: Session["agent"], requestId: string,
+  answers: Record<string, string[]>, dismissed: boolean
+) => {
+  const interactive = agent as typeof agent & InteractiveQuestionAgent;
+  if (dismissed && interactive.dismissQuestion) return await interactive.dismissQuestion(requestId);
+  if (interactive.answerQuestion) return await interactive.answerQuestion(requestId, answers);
+  return false;
 };
 
 class BridgeRequestError extends Error {
@@ -507,6 +531,30 @@ export const createDrawsyBridge = (
   const conversationStartLocks = new Map<string, Promise<void>>();
   const localConversations = new LocalConversationStore();
   const emit = (session: Session, event: BridgeEvent) => {
+    if (event.type === "question.request" && !session.activeTurnId) {
+      void settleQuestion(session.agent, event.data.requestId, {}, true).catch((error) =>
+        console.warn("Drawsy native question could not be dismissed outside a turn.", error)
+      );
+      return;
+    } else if (event.type === "question.request") {
+      event = { ...event, data: { ...event.data, turnId: session.activeTurnId! } };
+    } else if (event.type === "question.resolved") {
+      const pending = session.pendingQuestions.get(event.data.requestId);
+      if (pending) event = { ...event, data: { ...event.data, turnId: pending.turnId } };
+    }
+    if (event.type === "turn.status" && session.activeTurnId) {
+      session.lastTurnStatus = {
+        turnId: session.activeTurnId,
+        status: event.data.status,
+        ...(event.data.error ? { error: event.data.error } : {})
+      };
+    } else if (event.type === "error" && session.activeTurnId) {
+      session.lastTurnStatus = {
+        turnId: session.activeTurnId,
+        status: "failed",
+        error: event.data.message
+      };
+    }
     if (event.type === "usage.recorded") {
       if (session.conversationId) {
         const agent = session.agent.metadata;
@@ -524,11 +572,42 @@ export const createDrawsyBridge = (
       }
       return;
     }
+    if (event.type === "subagent.updated") {
+      const previous = session.subagents.get(event.data.id);
+      const update = { ...previous, ...event.data };
+      if (previous &&
+          update.status === previous.status &&
+          update.label === previous.label &&
+          update.task === previous.task &&
+          update.detail === previous.detail &&
+          update.activity === previous.activity &&
+          update.model === previous.model &&
+          update.modelProvider === previous.modelProvider &&
+          update.reasoningEffort === previous.reasoningEffort &&
+          update.output === previous.output) return;
+      session.subagents.set(update.id, update);
+      event = { type: "subagent.updated", data: update };
+    }
     session.touchedAt = Date.now();
+    if (event.type === "question.request") session.pendingQuestions.set(event.data.requestId, event.data);
+    else if (event.type === "question.resolved") session.pendingQuestions.delete(event.data.requestId);
     if (
       event.type === "error" ||
       (event.type === "turn.status" && event.data.status !== "inProgress")
     ) {
+      for (const question of session.pendingQuestions.values()) {
+        const reply = session.toolQuestionReplies.get(question.requestId);
+        if (reply) {
+          reply({ dismissed: true });
+          continue;
+        }
+        if (session.questionReplies.has(question.requestId)) continue;
+        void settleQuestion(session.agent, question.requestId, {}, true).catch((error) =>
+          console.warn("Drawsy native question could not be dismissed after turn end.", error)
+        );
+      }
+      session.pendingQuestions.clear();
+      session.activeTurnId = null;
       session.activeConnectorTurn = null;
       session.activeResourceTurn = null;
       session.activeGenerationMode = null;
@@ -622,6 +701,9 @@ export const createDrawsyBridge = (
   const closeSession = (session: Session, event?: BridgeEvent) => {
     if (event) emit(session, event);
     sessions.delete(session.id);
+    for (const reply of session.toolQuestionReplies.values()) {
+      reply({ dismissed: true });
+    }
     if (
       session.conversationId &&
       conversationSessions.get(session.conversationId)?.id === session.id
@@ -1445,6 +1527,49 @@ export const createDrawsyBridge = (
         return;
       }
 
+      const internalQuestion = url.pathname.match(/^\/internal\/sessions\/([^/]+)\/questions$/);
+      if (request.method === "POST" && internalQuestion) {
+        const session = internalSession(request, response, decodeURIComponent(internalQuestion[1]!));
+        if (!session) return;
+        const turnId = session.activeTurnId;
+        if (!turnId) throw new BridgeRequestError(409, "turn_not_active", "Start a turn before asking a question.");
+        const parsed = questionToolInput.safeParse(await readJson(request));
+        if (!parsed.success) throw new BridgeRequestError(400, "question_invalid", "Invalid questions.");
+        if (session.activeTurnId !== turnId || sessions.get(session.id) !== session || response.destroyed) {
+          throw new BridgeRequestError(409, "turn_not_active", "The turn has ended.");
+        }
+        const requestId = randomUUID();
+        const reply = await new Promise<QuestionToolReply>((resolve) => {
+          const dismiss = () => finish({ dismissed: true });
+          const finish = (reply: QuestionToolReply) => {
+            clearTimeout(timer);
+            response.off("close", dismiss);
+            session.toolQuestionReplies.delete(requestId);
+            if (session.pendingQuestions.has(requestId)) {
+              emit(session, { type: "question.resolved", data: { requestId, turnId } });
+            }
+            resolve(reply);
+          };
+          const timer = setTimeout(dismiss, QUESTION_TOOL_TIMEOUT_MS);
+          response.once("close", dismiss);
+          session.toolQuestionReplies.set(requestId, finish);
+          emit(session, {
+            type: "question.request",
+            data: {
+              requestId,
+              turnId,
+              questions: parsed.data.questions.map((question, index) => ({
+                ...question,
+                id: String(index + 1),
+                allowCustom: true
+              }))
+            }
+          });
+        });
+        if (!response.destroyed) json(response, 200, reply);
+        return;
+      }
+
       const internalCanvas = url.pathname.match(
         /^\/internal\/sessions\/([^/]+)\/canvas\/(read|capabilities|connector|label|diagram|apply|inspect|image|context|replace-image|preview|library|control)$/
       );
@@ -2150,6 +2275,15 @@ export const createDrawsyBridge = (
             request.headers.origin
           );
           let sessionRef: Session | null = null;
+          const startupSubagents: Array<Extract<BridgeEvent, { type: "subagent.updated" }>> = [];
+          const onAgentEvent = (event: BridgeEvent) => {
+            if (sessionRef) {
+              if (engine === "codex") emitCodexEvent(sessionRef, event);
+              else emit(sessionRef, event);
+            } else if (event.type === "subagent.updated") {
+              startupSubagents.push(event);
+            }
+          };
           let agent: CodexAppServer | OpenCodeAppServer | PiAppServer | DeepSeekAppServer;
           try {
             await prepareContextStore(folder.path);
@@ -2168,11 +2302,11 @@ export const createDrawsyBridge = (
             };
             if (engine === "pi" || engine === "omp") {
               const runtimePath = path.join(localConversations.stateDirectory, engine, conversationId);
-              agent = await PiAppServer.start(folder.path, { ...agentOptions, engine, piBinary: engine === "omp" ? resolveOmpBinary() : resolvePiBinary(), runtimePath, sessionDir: path.join(runtimePath, "sessions"), nativeSessionId: conversationId }, (event) => sessionRef && emit(sessionRef, event));
+              agent = await PiAppServer.start(folder.path, { ...agentOptions, engine, piBinary: engine === "omp" ? resolveOmpBinary() : resolvePiBinary(), runtimePath, sessionDir: path.join(runtimePath, "sessions"), nativeSessionId: conversationId }, onAgentEvent);
               hadNativeSession = agent.resumed;
             } else if (engine === "deepseek") {
               const runtimePath = path.join(localConversations.stateDirectory, "deepseek", conversationId);
-              agent = await DeepSeekAppServer.start(folder.path, { ...agentOptions, deepseekBinary: resolveDeepSeekBinary(), runtimePath, nativeSessionId: conversationId }, (event) => sessionRef && emit(sessionRef, event));
+              agent = await DeepSeekAppServer.start(folder.path, { ...agentOptions, deepseekBinary: resolveDeepSeekBinary(), runtimePath, nativeSessionId: conversationId }, onAgentEvent);
               hadNativeSession = agent.resumed;
             } else if (engine === "opencode") {
               agent = await OpenCodeAppServer.start(
@@ -2186,7 +2320,7 @@ export const createDrawsyBridge = (
                   ),
                   nativeSessionId: localConversation.openCodeSessionId
                 },
-                (event) => sessionRef && emit(sessionRef, event)
+                onAgentEvent
               );
               hadNativeSession = agent.resumed;
             } else {
@@ -2194,7 +2328,7 @@ export const createDrawsyBridge = (
                 CodexAppServer.start(
                   folder.path,
                   { ...agentOptions, nativeThreadId },
-                  (event) => emitCodexEvent(sessionRef, event),
+                  onAgentEvent,
                   (image) => {
                     if (!sessionRef) return;
                     const savedPath =
@@ -2265,12 +2399,18 @@ export const createDrawsyBridge = (
             folder,
             clients: new Set(),
             canvasPending: new Map(),
+            pendingQuestions: new Map(),
+            subagents: new Map(),
+            toolQuestionReplies: new Map(),
+            questionReplies: new Set(),
             generatedImages: [],
             contextCaptures: new Map(),
             activeConnectorTurn: null,
             activeResourceTurn: null,
             generationMode: "draw",
             activeGenerationMode: null,
+            activeTurnId: null,
+            lastTurnStatus: null,
             activeDrawMode: false,
             turnStartPending: false,
             connectorBackendUrl: connectorBackend.url,
@@ -2280,6 +2420,8 @@ export const createDrawsyBridge = (
             touchedAt: Date.now()
           };
           sessionRef = session;
+          for (const event of startupSubagents) emit(session, event);
+          startupSubagents.length = 0;
           sessions.set(id, session);
           if (conversationId) conversationSessions.set(conversationId, session);
           if (
@@ -2350,7 +2492,10 @@ export const createDrawsyBridge = (
             type: "session.ready",
             data: {
               folderName: folderNameForClient(session.folder),
-              agent: session.agent.metadata
+              agent: session.agent.metadata,
+              questions: [...session.pendingQuestions.values()],
+              ...(session.subagents.size ? { subagents: [...session.subagents.values()] } : {}),
+              ...(session.lastTurnStatus ? { turnStatus: session.lastTurnStatus } : {})
             }
           })}\n`
         );
@@ -2359,6 +2504,55 @@ export const createDrawsyBridge = (
           clearInterval(heartbeat);
           session.clients.delete(response);
         });
+        return;
+      }
+
+      const questionMatch = url.pathname.match(/^\/v1\/sessions\/([^/]+)\/questions\/([^/]+)$/);
+      if (request.method === "POST" && questionMatch) {
+        const session = publicSession(request, response, decodeURIComponent(questionMatch[1]!));
+        if (!session) return;
+        const requestId = decodeURIComponent(questionMatch[2]!);
+        const pending = session.pendingQuestions.get(requestId);
+        if (!pending) throw new BridgeRequestError(404, "question_not_found", "Question is no longer pending.");
+        if (session.questionReplies.has(requestId)) throw new BridgeRequestError(409, "question_reply_in_progress", "An answer is already being submitted.");
+        session.questionReplies.add(requestId);
+        try {
+          const body = await readJson(request);
+          if (session.pendingQuestions.get(requestId) !== pending) throw new BridgeRequestError(409, "question_not_pending", "Question is no longer pending.");
+          const dismissed = body.dismissed === true;
+          const answers: Record<string, string[]> = Object.create(null);
+          if (!dismissed) {
+            if (!isRecord(body.answers)) throw new BridgeRequestError(400, "question_answers_invalid", "answers must be an object keyed by question ID.");
+            const knownIds = new Set(pending.questions.map((question) => question.id));
+            if (knownIds.size !== pending.questions.length || pending.questions.some((question) => !question.id)) throw new BridgeRequestError(409, "question_invalid", "The agent supplied invalid question identifiers.");
+            if (Object.keys(body.answers).some((id) => !knownIds.has(id))) throw new BridgeRequestError(400, "question_answers_invalid", "answers contains an unknown question ID.");
+            for (const question of pending.questions) {
+              const value = body.answers[question.id];
+              if (value === undefined) continue;
+              const labels = new Set(question.options?.map((option) => option.label) || []);
+              const maxAnswers = question.multiSelect ? labels.size + (question.allowCustom ? 1 : 0) : question.allowCustom && labels.size ? 2 : 1;
+              if (!Array.isArray(value) || value.length > maxAnswers || value.some((item) => typeof item !== "string" || item.length > 10_000) || new Set(value).size !== value.length) {
+                throw new BridgeRequestError(400, "question_answers_invalid", `Answer for ${question.id} has an invalid format.`);
+              }
+              if (!question.allowEmpty && value.includes("")) throw new BridgeRequestError(400, "question_answers_invalid", `Answer for ${question.id} cannot be empty.`);
+              if (value.filter((item) => !labels.has(item)).length > (question.allowCustom ? 1 : 0)) throw new BridgeRequestError(400, "question_answers_invalid", `Answer for ${question.id} contains too many custom values.`);
+              if (!question.allowCustom && question.options?.length && value.some((item) => !labels.has(item))) throw new BridgeRequestError(400, "question_answers_invalid", `Answer for ${question.id} must match one of its choices.`);
+              answers[question.id] = value;
+            }
+          }
+          const toolReply = session.toolQuestionReplies.get(requestId);
+          if (toolReply) {
+            toolReply(dismissed ? { dismissed: true } : { answers });
+          } else {
+            if (!await settleQuestion(session.agent, requestId, answers, dismissed)) {
+              throw new BridgeRequestError(409, "question_not_pending", "Question is no longer pending.");
+            }
+            emit(session, { type: "question.resolved", data: { turnId: pending.turnId, requestId } });
+          }
+          json(response, 202, { accepted: true });
+        } finally {
+          session.questionReplies.delete(requestId);
+        }
         return;
       }
 
@@ -2427,11 +2621,14 @@ export const createDrawsyBridge = (
             "A Drawsy turn is already running."
           );
         }
+        if (body.turnId !== undefined && (typeof body.turnId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body.turnId))) throw new BridgeRequestError(400, "turn_id_invalid", "turnId must be a UUID.");
         session.generationMode = generationMode;
         session.activeDrawMode = drawMode;
         session.activeConnectorTurn = connectorTurn;
         session.activeResourceTurn = resourceTurn;
         session.activeGenerationMode = generationMode;
+        session.activeTurnId = typeof body.turnId === "string" ? body.turnId : randomUUID();
+        session.lastTurnStatus = { turnId: session.activeTurnId, status: "inProgress" };
         session.turnStartPending = true;
         try {
           let prompt = message;
@@ -2480,6 +2677,8 @@ export const createDrawsyBridge = (
           session.activeConnectorTurn = null;
           session.activeResourceTurn = null;
           session.activeGenerationMode = null;
+          session.activeTurnId = null;
+          session.lastTurnStatus = null;
           session.activeDrawMode = false;
           throw error;
         } finally {

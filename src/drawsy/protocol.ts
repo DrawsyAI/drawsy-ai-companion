@@ -439,7 +439,44 @@ export type AgentUsage = {
   costUsd?: number;
 };
 
+export type DrawsyAgentQuestion = {
+  id: string;
+  header?: string;
+  question: string;
+  detail?: string;
+  options?: Array<{ label: string; description?: string }>;
+  multiSelect?: boolean;
+  allowCustom?: boolean;
+  secret?: boolean;
+  multiline?: boolean;
+  defaultValue?: string;
+  placeholder?: string;
+  allowEmpty?: boolean;
+};
+
+export type DrawsyQuestionRequest = {
+  turnId: string;
+  requestId: string;
+  questions: DrawsyAgentQuestion[];
+};
+
+export type DrawsySubagent = {
+  id: string;
+  label?: string;
+  task?: string;
+  status: "running" | "completed" | "failed" | "interrupted" | "unknown";
+  detail?: string;
+  activity?: string;
+  output?: string;
+  model?: string;
+  modelProvider?: string;
+  reasoningEffort?: string;
+};
+
 export type BridgeEvent =
+  | { type: "subagent.updated"; data: DrawsySubagent }
+  | { type: "question.request"; data: DrawsyQuestionRequest }
+  | { type: "question.resolved"; data: { turnId: string; requestId: string } }
   | {
       type: "usage.recorded";
       data: {
@@ -451,7 +488,7 @@ export type BridgeEvent =
     }
   | {
       type: "session.ready";
-      data: { folderName: string | null; agent: AgentMetadata };
+      data: { folderName: string | null; agent: AgentMetadata; questions?: DrawsyQuestionRequest[]; subagents?: DrawsySubagent[]; turnStatus?: { turnId: string; status: string; error?: string } };
     }
   | { type: "session.closed"; data: { reason: "idle" } }
   | { type: "assistant.delta"; data: { delta: string; itemId: string } }

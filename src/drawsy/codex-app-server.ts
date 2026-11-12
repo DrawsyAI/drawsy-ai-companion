@@ -1,3 +1,4 @@
+import { QUESTION_TOOL_TIMEOUT_MS } from "./question-tool.js";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import crossSpawn from "cross-spawn";
 import { randomUUID } from "node:crypto";
@@ -21,6 +22,7 @@ import type {
   AiResourceId,
   BridgeEvent,
   DrawsySurfaceKind,
+  DrawsySubagent,
   JsonObject,
 } from "./protocol.js";
 import { isRecord } from "./protocol.js";
@@ -85,6 +87,65 @@ type ActiveTool = {
   tool: string;
   startedMessage: string;
   completedMessage: string;
+};
+
+const collabStatus = (status: unknown): DrawsySubagent["status"] => {
+  switch (status) {
+    case "pendingInit":
+    case "running":
+      return "running";
+    case "completed":
+      return "completed";
+    case "errored":
+      return "failed";
+    case "interrupted":
+    case "shutdown":
+      return "interrupted";
+    default:
+      return "unknown";
+  }
+};
+
+export const codexSubagentUpdates = (item: JsonObject): DrawsySubagent[] => {
+  if (item.type === "subAgentActivity" && typeof item.agentThreadId === "string") {
+    const { kind, agentPath } = item;
+    if (kind !== "started" && kind !== "completed" && kind !== "interrupted") return [];
+    const label = typeof agentPath === "string" ? agentPath.split("/").filter(Boolean).at(-1) : undefined;
+    const status = kind === "started" ? "running"
+      : kind === "completed" ? "completed" : "interrupted";
+    return [{
+      id: item.agentThreadId,
+      status,
+      ...(label ? { label } : {}),
+      ...(kind === "started" && typeof item.model === "string" && item.model
+        ? { model: item.model } : {}),
+      ...(kind === "started" && typeof item.reasoningEffort === "string" && item.reasoningEffort
+        ? { reasoningEffort: item.reasoningEffort } : {})
+    }];
+  }
+  if (item.type !== "collabAgentToolCall") return [];
+  const states = isRecord(item.agentsStates) ? item.agentsStates : {};
+  const receivers = Array.isArray(item.receiverThreadIds) ? item.receiverThreadIds : [];
+  return [...new Set([...receivers, ...Object.keys(states)])].flatMap((id) => {
+    if (typeof id !== "string" || !id || id === item.senderThreadId) return [];
+    const state = states[id];
+    const nativeStatus = isRecord(state) ? state.status : undefined;
+    const status = collabStatus(nativeStatus);
+    if (status === "unknown" && nativeStatus !== "notFound" && item.tool !== "spawnAgent") return [];
+    const task = item.tool === "spawnAgent" && typeof item.prompt === "string"
+      ? item.prompt.trim().slice(0, 2000)
+      : "";
+    const detail = isRecord(state) && typeof state.message === "string"
+      ? state.message.trim().slice(0, 3000)
+      : "";
+    return [{
+      id,
+      status: status === "unknown" && item.tool === "spawnAgent" && item.status !== "failed"
+        ? "running" : status,
+      ...(task ? { task } : {}),
+      ...(detail ? { detail } : {})
+    }];
+  });
 };
 
 const describeToolItem = (item: JsonObject): ActiveTool | null => {
@@ -618,14 +679,11 @@ const SIMPLE_GENERATION_INSTRUCTION = `Simple mode is ON for this turn. Fast Mod
 - Use the user's requested canvas operation and the existing visual language. Artist roughness (1) for shapes/arrows and Excalifont (fontFamily 5) for text are adaptable defaults, not requirements.
 - When the toolbar Draw mode is on, follow its direct-control instructions instead of using structured canvas writes.`;
 
-export const FAST_MODE_INSTRUCTION = `Fast Mode is ON for this turn. Build diagrams through semantic Mermaid source and Drawsy's typed diagram converter.
-- Read the current canvas and call get_canvas_capabilities first. Treat diagramCode.nativeEditableTypes and sourceMaxBytes as the converter's runtime authority. Choose a diagram family from the user's intent and actual support; do not follow a fixed intent-to-family recipe or add a type/style picker. Preserve the existing canvas visual language and let the converter place content in clear canvas space.
-- Use render_diagram_code to create a whole diagram. Fast Mode still supports normal canvas management: use apply_canvas_changes to update existing elements or delete existing elements, including failed or intermediate work you created; never delete unrelated content. Use create_or_update_connector and set_container_label for objects that already exist, and image insertion/replacement, canvas capture, and live preview when requested. The runtime checks raw upserts against the live canvas; never use them to create new shapes or diagram structures.
-- Do not use native pointer gestures or another canvas path to bypass the diagram converter when creating a whole diagram. Keep canvas edits focused on the user's requested existing content and preserve its visual choices.
-- Preserve supplied facts and chart values. Never invent numerical data to force a chart; ask only when missing information is essential.
-- If conversion reports a syntax error, make one focused correction and retry. Reuse operationId only for the same unchanged request; use a new one when source changes.
-- Inspect returned result details and rendered canvas after conversion. A successful conversion confirms rendering, not semantic correctness; check for omissions, clipped or overlapping content, unreadable labels, and misleading relationships.
-- Explain when the request cannot be represented faithfully by the available converter. Use a supported alternative only when it preserves the requested meaning; do not claim unsupported source is an editable diagram.`;
+export const FAST_MODE_INSTRUCTION = `Fast Mode is ON for this turn. For a new diagram, understand the request, read the canvas and get_canvas_capabilities, submit one complete Mermaid source with render_diagram_code, then verify the result once.
+- Choose the family and orientation from the user's intent and live diagramCode support. Preserve the user's facts and values. Let the converter find clear canvas space. Use presentationFrame when the work belongs on a slide.
+- Use the render result and one relevant check of the inserted diagram. Choose layout inspection or a targeted capture as appropriate. Finish when the diagram communicates the request clearly. Skip test renders, orientation comparisons, and repeated reviews of a readable result. The multi-pass guidance for other modes does not apply to new Fast diagrams.
+- Make one focused retry for an actionable conversion error or one focused replacement for a material rendered defect, then check the correction. Use a fresh operationId for changed source and replaceOperationId for a successful group you are correcting. Report any remaining material limitation.
+- Normal canvas management remains available for edits and cleanup of existing objects. Create new diagrams through the converter, without raw element construction or pointer gestures.`;
 
 const NATIVE_CHROME_TARGET_INSTRUCTION = (
   drawsyTabId: string,
@@ -688,6 +746,7 @@ export const getDeveloperInstructions = (
   drawMode = false
 ) =>
   `${DEVELOPER_INSTRUCTIONS}
+- Use the Drawsy ask_user_questions tool when the user asks for interactive questions or when you need answers before proceeding. Wait for its result before continuing.
 - ${
     workspaceMode === "private"
       ? "No user folder is selected. The working directory is a per-chat scratch folder; other local resources remain available through the native harness tools."
@@ -697,11 +756,11 @@ export const getDeveloperInstructions = (
       ? `
 - The Drawsy MCP is scoped to the single current ${surfaceKind}.
 - Read it before changing it. The snapshot includes the active theme/preset, rendered colors, selection, and existing relationships. Use get_canvas_capabilities when choosing available elements, routes, or picker swatches, including on a blank canvas. Draw style from the user's purpose and the actual canvas; do not impose a fixed palette or layout recipe.
-${generationMode === "fast" ? FAST_MODE_INSTRUCTION : drawMode ? NATIVE_CANVAS_CONTROL_INSTRUCTION : SIMPLE_GENERATION_INSTRUCTION}
-- After each visual pass, use inspect_current_canvas_layout. Treat its findings as rendered geometry evidence: repair relevant text, node-overlap, and connector-route issues in the next pass before continuing. It is advisory—retain a deliberate overlap only when the requested visual meaning requires it. Before declaring a visual result complete, inspect it once more. When an image-level check would clarify a finding, capture the relevant region and inspect that capture.
+${generationMode === "fast" ? FAST_MODE_INSTRUCTION : drawMode ? NATIVE_CANVAS_CONTROL_INSTRUCTION : SIMPLE_GENERATION_INSTRUCTION}${generationMode !== "fast" ? `
+- Outside Fast Mode, after each visual pass, use inspect_current_canvas_layout. Treat its findings as rendered geometry evidence: repair relevant text, node-overlap, and connector-route issues in the next pass before continuing. It is advisory—retain a deliberate overlap only when the requested visual meaning requires it. Before declaring a visual result complete, inspect it once more. When an image-level check would clarify a finding, capture the relevant region and inspect that capture.
 - For a relationship-rich diagram, do one final rendered capture review after the geometry check. Bounds alone cannot tell whether a connector communicates the intended relationship: verify that each important connector has an intentional source and target, its label belongs to that relationship, the route is visually unambiguous, and labels remain readable against the active theme. Repair only findings relevant to the requested diagram; do not invent domain rules or alter deliberate visual choices.
 - Use Excalidraw-native text geometry. Text that belongs inside a shape must be bound to that container and fit within it; standalone labels must leave clear space around nearby nodes and connectors. Route arrows around unrelated nodes rather than through them.
-- When visual scale, layout, annotations, or an editable source matters, use capture_canvas_context. Its preview is the rendered region; its source-image paths are pristine originals.
+- When visual scale, layout, annotations, or an editable source matters, use capture_canvas_context. Its preview is the rendered region; its source-image paths are pristine originals.` : ""}
 - In Draw mode, for generated images, pass the generator's exact saved path directly to add_image_from_file; do not copy it. If no saved path is returned, use imagegen://latest. Never create a bare image placeholder.
 - In Draw mode, for an edit of an existing image, use replace_canvas_image_from_file so its geometry and identity are preserved.
 - In Draw mode, when the user asks to build or preview a local web app, start its development server inside the current Drawsy workspace${
@@ -948,6 +1007,9 @@ export class CodexAppServer {
   private readonly process: ChildProcessWithoutNullStreams;
   private readonly pending = new Map<number, PendingRequest>();
   private readonly activeTools = new Map<string, ActiveTool>();
+  private readonly subagentIds = new Set<string>();
+  private readonly subagentOutputs = new Map<string, string>();
+  private readonly pendingQuestions = new Map<string, { rpcId: string | number; turnId: string; questions: Array<{ id: string; options: Array<{ label: string }>; allowCustom: boolean }> }>();
   private nextId = 1;
   private threadId: string | null = null;
   private turnActive = false;
@@ -1093,6 +1155,30 @@ export class CodexAppServer {
       throw new Error("Codex metadata is not ready.");
     }
     return this.agentMetadata;
+  }
+
+  answerQuestion(requestId: string, answers: Record<string, string[]>) {
+    const pending = this.pendingQuestions.get(requestId);
+    if (!pending) return false;
+    this.pendingQuestions.delete(requestId);
+    const nativeAnswers = Object.fromEntries(pending.questions.map((question) => {
+      const labels = new Set(question.options.map(({ label }) => label));
+      const selected = answers[question.id] || [];
+      const choices = selected.filter((answer) => labels.has(answer));
+      const custom = question.allowCustom ? selected.filter((answer) => !labels.has(answer)) : [];
+      const values = [
+        ...choices,
+        ...(custom.length && labels.has("None of the above") && !choices.includes("None of the above") ? ["None of the above"] : []),
+        ...custom.map((answer) => `user_note: ${answer}`)
+      ];
+      return [question.id, { answers: values }];
+    }));
+    this.respond(pending.rpcId, { answers: nativeAnswers });
+    return true;
+  }
+
+  dismissQuestion(requestId: string) {
+    return this.answerQuestion(requestId, {});
   }
 
   get nativeSessionId() {
@@ -1348,7 +1434,7 @@ export class CodexAppServer {
           },
           enabled: true,
           startup_timeout_sec: 15,
-          tool_timeout_sec: 45,
+          tool_timeout_sec: QUESTION_TOOL_TIMEOUT_MS / 1_000 + 15,
           default_tools_approval_mode: "auto",
           tools: {
             control_canvas: { approval_mode: "approve" },
@@ -2059,7 +2145,7 @@ export class CodexAppServer {
       typeof message.method === "string" &&
       (typeof message.id === "number" || typeof message.id === "string")
     ) {
-      this.handleServerRequest(message.id, message.method);
+      this.handleServerRequest(message.id, message.method, message.params);
       return;
     }
     if (typeof message.id === "number") {
@@ -2078,7 +2164,61 @@ export class CodexAppServer {
       return;
     }
     const params = message.params;
-    if (message.method === "mcpServer/startupStatus/updated") {
+    const childThreadId = this.threadId && typeof params.threadId === "string" &&
+      params.threadId !== this.threadId ? params.threadId : null;
+    const knownChild = childThreadId !== null && this.subagentIds.has(childThreadId);
+    if (knownChild && childThreadId && message.method === "item/agentMessage/delta") {
+      const delta = typeof params.delta === "string" ? params.delta : "";
+      if (delta) {
+        const output = `${this.subagentOutputs.get(childThreadId) || ""}${delta}`.slice(-12000);
+        this.subagentOutputs.set(childThreadId, output);
+        this.emit({ type: "subagent.updated", data: { id: childThreadId, status: "running", output } });
+      }
+      return;
+    }
+    if (
+      (!childThreadId || knownChild) &&
+      (message.method === "item/started" || message.method === "item/completed") &&
+      isRecord(params.item)
+    ) {
+      for (const subagent of codexSubagentUpdates(params.item)) {
+        if (subagent.id === this.threadId) continue;
+        this.subagentIds.add(subagent.id);
+        this.emit({ type: "subagent.updated", data: subagent });
+      }
+      if (knownChild && childThreadId && isRecord(params.item)) {
+        const item = params.item;
+        if (item.type === "agentMessage" && typeof item.text === "string") {
+          const output = item.text.slice(-12000);
+          this.subagentOutputs.set(childThreadId, output);
+          this.emit({ type: "subagent.updated", data: { id: childThreadId, status: "running", output } });
+        } else {
+          const tool = describeToolItem(item);
+          if (tool) this.emit({ type: "subagent.updated", data: { id: childThreadId, status: "running", activity: (message.method === "item/started" ? tool.startedMessage : tool.completedMessage).slice(0, 500) } });
+        }
+      }
+    }
+    if (childThreadId && message.method !== "serverRequest/resolved") {
+      if (knownChild && message.method === "turn/started") {
+        this.emit({ type: "subagent.updated", data: { id: childThreadId, status: "running" } });
+      } else if (knownChild && message.method === "turn/completed" && isRecord(params.turn)) {
+        const status = params.turn.status;
+        if (status === "completed" || status === "failed" || status === "interrupted") {
+          this.emit({ type: "subagent.updated", data: { id: childThreadId, status } });
+        }
+      }
+      return;
+    }
+    if (message.method === "serverRequest/resolved") {
+      const pendingEntry = [...this.pendingQuestions.entries()].find(([, pending]) =>
+        String(pending.rpcId) === String(params.requestId)
+      );
+      if (pendingEntry) {
+        const [requestId, pending] = pendingEntry;
+        this.pendingQuestions.delete(requestId);
+        this.emit({ type: "question.resolved", data: { turnId: pending.turnId, requestId } });
+      }
+    } else if (message.method === "mcpServer/startupStatus/updated") {
       const name = typeof params.name === "string" ? params.name : "";
       const status = typeof params.status === "string" ? params.status : "";
       if (name === "drawsy" && status === "ready") {
@@ -2401,7 +2541,7 @@ export class CodexAppServer {
     }
   }
 
-  private handleServerRequest(id: string | number, method: string) {
+  private handleServerRequest(id: string | number, method: string, params: unknown) {
     if (
       method === "item/commandExecution/requestApproval" ||
       method === "item/fileChange/requestApproval"
@@ -2425,8 +2565,44 @@ export class CodexAppServer {
       return;
     }
     if (method === "item/tool/requestUserInput") {
-      this.emitPolicyWarning("Codex requested additional interactive input");
-      this.respond(id, { answers: {} });
+      const request = isRecord(params) ? params : {};
+      const rawQuestions = Array.isArray(request.questions) ? request.questions : [];
+      const questions = rawQuestions.flatMap((value) => {
+        if (!isRecord(value) || typeof value.id !== "string" || value.id.length > 128 || typeof value.question !== "string" || value.question.length > 4000) return [];
+        const options = Array.isArray(value.options) ? value.options.slice(0, 20).flatMap((option) =>
+          isRecord(option) && typeof option.label === "string" && option.label.length <= 512
+            ? [{ label: option.label, ...(typeof option.description === "string" && option.description.length <= 2000 ? { description: option.description } : {}) }]
+            : []
+        ) : [];
+        const secret = value.isSecret === true;
+        return [{
+          id: value.id,
+          ...(typeof value.header === "string" ? { header: value.header } : {}),
+          question: value.question,
+          ...(options.length ? { options } : {}),
+          allowCustom: options.length === 0 || value.isOther === true,
+          secret,
+        }];
+      });
+      if (questions.length === 0 || questions.length > 10) {
+        this.respond(id, { answers: {} });
+        return;
+      }
+      const requestId = randomUUID();
+      const turnId = this.activeTurnId ?? randomUUID();
+      this.pendingQuestions.set(requestId, {
+        rpcId: id,
+        turnId,
+        questions: questions.map((question) => ({
+          id: question.id,
+          options: [
+            ...(question.options || []),
+            ...(question.allowCustom && question.options?.length ? [{ label: "None of the above" }] : [])
+          ],
+          allowCustom: question.allowCustom === true
+        }))
+      });
+      this.emit({ type: "question.request", data: { turnId, requestId, questions } });
       return;
     }
     if (method === "mcpServer/elicitation/request") {
