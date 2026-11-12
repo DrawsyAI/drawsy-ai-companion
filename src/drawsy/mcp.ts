@@ -3,6 +3,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod/v4";
+import { questionToolInput } from "./question-tool.js";
 
 import {
   addCanvasRenderSemantics,
@@ -257,6 +258,32 @@ const server = new McpServer({
   version: "0.1.0"
 });
 
+server.registerTool(
+  "ask_user_questions",
+  {
+    description: "Ask the user one or more interactive questions in the Drawsy chat. Optionally offer choices. The call waits for the user's answers or dismissal and returns them to this turn.",
+    inputSchema: questionToolInput
+  },
+  async (input, { signal }) => {
+    const response = await fetch(
+      new URL(`/internal/sessions/${encodeURIComponent(sessionId)}/questions`, bridgeUrl),
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${sessionSecret}`,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify(input),
+        signal
+      }
+    );
+    return {
+      ...(response.ok ? {} : { isError: true }),
+      content: [{ type: "text" as const, text: await response.text() }]
+    };
+  }
+);
+
 if (surfaceKind === "canvas" || surfaceKind === "presentation") {
   server.registerTool(
     "read_current_canvas",
@@ -283,7 +310,7 @@ if (surfaceKind === "canvas" || surfaceKind === "presentation") {
     "get_canvas_capabilities",
     {
       description:
-        "Read the shapes, connector routes, presentation capabilities, and current picker palette supported by this attached Drawsy canvas. Palette swatches include stored and rendered colors so a blank canvas can still be styled for its active theme. Use this when choosing native elements or colors; it does not prescribe a visual style.",
+        "Read the diagram-code catalog, shapes, connector routes, presentation capabilities, and current picker palette supported by this attached Drawsy canvas. Palette swatches include stored and rendered colors so a blank canvas can still be styled for its active theme. Use this when choosing native elements or colors; it does not prescribe a visual style.",
       inputSchema: z.object({}),
       annotations: { readOnlyHint: true, destructiveHint: false }
     },
@@ -565,7 +592,7 @@ if (surfaceKind === "canvas" || surfaceKind === "presentation") {
     "render_diagram_code",
     {
       description:
-        "Render semantic Mermaid source on the attached Drawsy canvas through its typed diagram converter. This is Fast Mode's code conversion operation and is also available to other MCP clients. Read the canvas and `get_canvas_capabilities` first. Use its `diagramCode` catalog as the converter support authority. Choose syntax and diagram family from the user's intent; keep source concise and preserve canvas context. In a presentation, set presentationFrame to reuse a relevant slide or create a new slide only when the requested work belongs in a slide; omit it for independent canvas content. The result reports outputKind, diagramType, elementCount, inserted elementIds, and bounds. Use replaceOperationId only to replace an earlier converter-created diagram group after inspection; do not target other canvas elements.",
+        "Render semantic Mermaid source on the attached Drawsy canvas through its typed diagram converter. This is Fast Mode's code conversion operation and is also available to other MCP clients. Read the canvas and `get_canvas_capabilities` first. Use its `diagramCode` catalog as the converter support authority. Choose syntax and diagram family from the user's intent and submit the complete diagram once. The converter places it in clear canvas space. In a presentation, set presentationFrame to reuse a relevant slide or create a new slide only when the requested work belongs in a slide; omit it for independent canvas content. The result reports outputKind, diagramType, elementCount, inserted elementIds, and bounds. Use replaceOperationId only to replace an earlier converter-created diagram group after inspection; do not target other canvas elements.",
       inputSchema: z
         .object({
           format: z.literal("mermaid"),
@@ -692,7 +719,7 @@ if (surfaceKind === "canvas" || surfaceKind === "presentation") {
     "inspect_current_canvas_layout",
     {
       description:
-        "Inspect the current canvas for missing or broken arrow bindings, crossings along arrow paths, clipped or crowded labels, node overlaps, and poor contrast using rendered colors. Findings include element IDs and are advisory visual evidence, not an automatic rewrite. Use it after visual passes and resolve relevant findings before claiming a diagram is complete.",
+        "Inspect the current canvas for missing or broken arrow bindings, crossings along arrow paths, clipped or crowded labels, node overlaps, and poor contrast using rendered colors. Findings include element IDs and are advisory visual evidence, not an automatic rewrite. In Fast Mode, use it as a single layout check when useful and focus on findings about the new diagram. In other modes, use it after visual passes and resolve relevant findings before claiming a diagram is complete.",
       inputSchema: z.object({}),
       annotations: { readOnlyHint: true, destructiveHint: false }
     },

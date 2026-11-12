@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import type {
   AgentContextCapture, AgentControls, AgentMetadata, AgentPromptTag,
   AgentSettingsPatch, BridgeEvent, DrawsySurfaceKind, JsonObject, AgentConnectorSource,
-  AiResourceId
+  AiResourceId, DrawsyAgentQuestion, DrawsySubagent
 } from "./protocol.js";
 import { isRecord } from "./protocol.js";
 import { inclusiveTokenCount, usageEvent } from "./agent-usage.js";
@@ -25,6 +25,7 @@ type SessionConfig = {
   runtimePath: string; nativeSessionId: string;
 };
 type Rpc = Record<string, unknown>;
+type RpcId = string | number;
 type Pending = { resolve(value: unknown): void; reject(error: Error): void; timer: NodeJS.Timeout | null };
 
 const READY_TIMEOUT = 45_000;
@@ -44,12 +45,16 @@ export class DeepSeekSdkProcess {
   private exitResolve!: (code: number | null) => void;
   readonly exited = new Promise<number | null>((resolve) => { this.exitResolve = resolve; });
 
-  constructor(private readonly onNotification: (method: string, params: Rpc) => void) {}
+  constructor(
+    private readonly onNotification: (method: string, params: Rpc) => void,
+    private readonly onRequest?: (id: RpcId, method: string, params: Rpc) => void
+  ) {}
 
   start(binary: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv; detached: boolean }) {
     this.processGroupIsolated = options.detached;
     const child = spawnNativeCli(binary, args, { cwd: options.cwd, env: options.env, stdio: "pipe", detached: options.detached, windowsHide: true });
     this.child = child;
+    child.stdin.on("error", () => undefined);
     child.stdout.on("data", (chunk: Buffer) => this.consume(this.decoder.write(chunk)));
     child.stderr.on("data", () => undefined);
     child.on("error", (error) => this.fail(error));
@@ -64,13 +69,29 @@ export class DeepSeekSdkProcess {
       if (!line) continue;
       let message: Rpc;
       try { message = rec(JSON.parse(line)); } catch { continue; }
-      if ("id" in message && ("result" in message || "error" in message)) {
+      if (typeof message.method === "string" && (typeof message.id === "string" || typeof message.id === "number")) {
+        if (this.onRequest) this.onRequest(message.id, message.method, rec(message.params));
+        else void this.respond(message.id, { error: { code: -32601, message: "Method not found." } }).catch(() => undefined);
+      } else if ("id" in message && ("result" in message || "error" in message)) {
         const key = String(message.id); const pending = this.pending.get(key); if (!pending) continue;
         this.pending.delete(key); if (pending.timer) clearTimeout(pending.timer);
         if (message.error) pending.reject(new Error(text(rec(message.error).message) || "DeepSeek Harness request failed."));
         else pending.resolve(message.result);
       } else if (typeof message.method === "string") this.onNotification(message.method, rec(message.params));
     }
+  }
+
+  respond(id: RpcId, response: { result: Rpc } | { error: { code: number; message: string } }) {
+    const child = this.child;
+    if (!child || this.closed || child.stdin.destroyed) {
+      return Promise.reject(new Error("DeepSeek Harness session is closed."));
+    }
+    return new Promise<void>((resolve, reject) => {
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, ...response })}\n`, (error) => {
+        if (error) reject(error);
+        else resolve();
+      });
+    });
   }
 
   request<T = Rpc>(method: string, params: Rpc = {}, timeoutMs = READY_TIMEOUT): Promise<T> {
@@ -141,7 +162,13 @@ export class DeepSeekAppServer {
   private assistantId = "";
   private history: Array<{ id: string; role: "user" | "assistant"; text: string }> = [];
   private readonly toolNames = new Map<string, string>();
+  private readonly pendingQuestions = new Map<string, {
+    rpcId: RpcId;
+    turnId: string;
+    questions: DrawsyAgentQuestion[];
+  }>();
   private readonly markerPath: string;
+  private readonly subagentSessions = new Set<string>();
 
   private constructor(private readonly folderPath: string, private readonly session: SessionConfig, private readonly emit: (event: BridgeEvent) => void) {
     this.markerPath = path.join(session.runtimePath, "session-created");
@@ -197,13 +224,17 @@ export class DeepSeekAppServer {
     };
     const patchPath = path.join(this.session.runtimePath, "drawsy-mcp.cordis.yml");
     await writeFile(patchPath, drawsyMcpOverlay({ id: `drawsy-${this.session.id}`, command: mcpProcess.command, entry, cwd: this.folderPath, env }), { mode: 0o600 });
-    const rpc = new DeepSeekSdkProcess((method, params) => this.handleNotification(method, params));
+    const rpc = new DeepSeekSdkProcess(
+      (method, params) => this.handleNotification(method, params),
+      (id, method, params) => this.handleRequest(rpc, id, method, params)
+    );
     this.rpc = rpc;
     void rpc.exited.then((code) => {
       if (this.rpc !== rpc || this.closed) return;
       this.rpc = null;
+      this.pendingQuestions.clear();
       if (this.turnActive) {
-        const finish = this.turnEnd; this.turnEnd = null; this.turnToken = null;
+        const finish = this.turnEnd; this.turnEnd = null;
         finish?.("failed", `DeepSeek Harness exited unexpectedly (${code ?? "signal"}).`);
       }
     });
@@ -215,7 +246,7 @@ export class DeepSeekAppServer {
     await rpc.request("initialize", {
       cwd: this.folderPath, provider: this.selectedModel.provider, model: this.selectedModel.model,
       ...(this.selectedModel.reasoningEffort ? { reasoningEffort: this.selectedModel.reasoningEffort } : {}),
-      capabilities: { userQuestions: false }, approvalRequests: false
+      capabilities: { userQuestions: true }, approvalRequests: false
     });
     const hasSession = await stat(this.markerPath).then(() => true, () => false);
     if (hasSession) {
@@ -224,8 +255,109 @@ export class DeepSeekAppServer {
     }
   }
 
+  private handleRequest(rpc: DeepSeekSdkProcess, rpcId: RpcId, method: string, params: Rpc) {
+    if (method !== "user-question/ask") {
+      void rpc.respond(rpcId, { error: { code: -32601, message: "Method not found." } }).catch(() => undefined);
+      return;
+    }
+    const turnId = this.turnToken;
+    const requestId = text(params.requestId);
+    const rawQuestions = arr(params.questions);
+    const questions = rawQuestions.flatMap((raw): DrawsyAgentQuestion[] => {
+      const question = rec(raw);
+      const id = text(question.id);
+      const prompt = text(question.question);
+      const intent = rec(question.intent).kind;
+      if (!id || !prompt || intent === "approval") return [];
+      const options = arr(question.options).flatMap((rawOption) => {
+        const option = rec(rawOption);
+        const label = text(option.label);
+        const description = text(option.description);
+        return label ? [{ label, ...(description ? { description } : {}) }] : [];
+      });
+      const header = text(question.header);
+      const detail = text(question.detail);
+      if (intent === "plan-review" && !options.length) return [];
+      return [{
+        id,
+        question: prompt,
+        ...(header ? { header } : {}),
+        ...(detail ? { detail } : {}),
+        ...(options.length ? { options } : {}),
+        multiSelect: question.multiSelect === true,
+        allowCustom: intent !== "plan-review"
+      }];
+    });
+    if (this.rpc !== rpc || !turnId || params.sessionId !== this.session.nativeSessionId ||
+        !requestId || this.pendingQuestions.has(requestId) || !questions.length ||
+        questions.length !== rawQuestions.length ||
+        new Set(questions.map((question) => question.id)).size !== questions.length) {
+      void rpc.respond(rpcId, { result: { cancelled: true } }).catch(() => undefined);
+      return;
+    }
+    this.pendingQuestions.set(requestId, { rpcId, turnId, questions });
+    this.emit({ type: "question.request", data: { requestId, turnId, questions } });
+  }
+
+  async answerQuestion(requestId: string, answers: Record<string, string[]>) {
+    const pending = this.pendingQuestions.get(requestId);
+    const rpc = this.rpc;
+    if (!pending || !rpc) return false;
+    const result = pending.questions.map((question) => {
+      const labels = new Set(question.options?.map((option) => option.label));
+      const values = answers[question.id] ?? [];
+      const selected = values.filter((value) => labels.has(value));
+      const custom = values.find((value) => !labels.has(value));
+      return { id: question.id, selected, ...(custom !== undefined ? { custom } : {}) };
+    });
+    await rpc.respond(pending.rpcId, { result: { answers: result } });
+    this.pendingQuestions.delete(requestId);
+    return true;
+  }
+
+  async dismissQuestion(requestId: string) {
+    const pending = this.pendingQuestions.get(requestId);
+    const rpc = this.rpc;
+    if (!pending || !rpc) return false;
+    await rpc.respond(pending.rpcId, { result: { cancelled: true } });
+    this.pendingQuestions.delete(requestId);
+    return true;
+  }
+
   private handleNotification(method: string, params: Rpc) {
-    if (method === "session.event" && params.sessionId === this.session.nativeSessionId) {
+    if (method === "subagent.started" || method === "subagent.finished") {
+      const id = text(params.childSessionId);
+      const parent = text(params.parentSessionId);
+      if (!id || id === this.nativeSessionId ||
+          (parent !== this.nativeSessionId && !this.subagentSessions.has(parent))) return;
+      this.subagentSessions.add(id);
+      const status: DrawsySubagent["status"] = method === "subagent.started" ? "unknown"
+        : params.stopReason === "aborted" ? "interrupted"
+        : params.status === "ok" ? "completed"
+        : params.status === "error" ? "failed"
+        : "unknown";
+      const detail = arr(params.lastAssistantMessage).map((part) => {
+        const block = rec(part);
+        return block.type === "text" ? text(block.text) : "";
+      }).join("").trim().slice(0, 3000);
+      this.emit({ type: "subagent.updated", data: { id, status, ...(detail ? { detail } : {}), ...(detail ? { output: detail.slice(-12000) } : {}) } });
+      return;
+    }
+    if (method === "session.status" && params.status === "running") {
+      const id = text(params.sessionId);
+      if (id !== this.nativeSessionId && this.subagentSessions.has(id)) {
+        this.emit({ type: "subagent.updated", data: { id, status: "running" } });
+        return;
+      }
+    }
+    if (method === "user-question.cancelled" && params.sessionId === this.session.nativeSessionId) {
+      const requestId = text(params.requestId);
+      const pending = this.pendingQuestions.get(requestId);
+      if (pending) {
+        this.pendingQuestions.delete(requestId);
+        this.emit({ type: "question.resolved", data: { requestId, turnId: pending.turnId } });
+      }
+    } else if (method === "session.event" && params.sessionId === this.session.nativeSessionId) {
       const event = rec(params.event); const data = rec(event.data); const kind = text(event.type);
       if (kind === "assistant/message") {
         const message = rec(data.message); const content = arr(message.content).flatMap((part) => {
@@ -356,6 +488,7 @@ export class DeepSeekAppServer {
   async interruptTurn() {
     if (!this.turnActive || !this.rpc) throw new Error("No DeepSeek Harness turn is running.");
     const rpc = this.rpc; this.rpc = null; this.turnActive = false; this.turnEnd = null; this.turnToken = null;
+    this.pendingQuestions.clear();
     await rpc.close();
     this.emit({ type: "turn.status", data: { status: "interrupted" } });
     this.closed = false;
@@ -434,6 +567,7 @@ export class DeepSeekAppServer {
     if (this.closed) return Promise.resolve();
     this.closed = true; this.turnEnd?.("interrupted"); this.turnEnd = null; this.turnToken = null;
     const rpc = this.rpc; this.rpc = null;
+    this.pendingQuestions.clear();
     return rpc?.close() || Promise.resolve();
   }
 }

@@ -27,6 +27,91 @@ test("OpenCode keeps permission decisions with its native profile", () => {
   ]);
 });
 
+test("OpenCode native question forms map answers through the session form API", async () => {
+  const emitted: unknown[] = [];
+  const requests: Array<{ path: string; init: RequestInit }> = [];
+  const server = Object.assign(Object.create(OpenCodeAppServer.prototype), {
+    openCodeSessionId: "session-1",
+    pendingQuestions: new Map(),
+    emit: (event: unknown) => emitted.push(event),
+    request: async (requestPath: string, init: RequestInit = {}) => {
+      requests.push({ path: requestPath, init });
+      return undefined;
+    }
+  }) as {
+    handleEvent(event: { type?: unknown; properties?: unknown }): void;
+    answerQuestion(requestId: string, answers: Record<string, string[]>): Promise<boolean>;
+    dismissQuestion(requestId: string): Promise<boolean>;
+  };
+  const form = (id: string) => ({
+    id,
+    sessionID: "session-1",
+    title: "Questions",
+    metadata: { kind: "question" },
+    fields: [
+      {
+        key: "q0",
+        type: "string",
+        title: "Platform",
+        description: "Which platform?",
+        options: [{ value: "Web", label: "Web", description: "Browser" }],
+        custom: true
+      },
+      {
+        key: "q1",
+        type: "multiselect",
+        title: "Features",
+        description: "Pick features",
+        options: [
+          { value: "Sharing", label: "Sharing" },
+          { value: "Offline", label: "Offline" }
+        ],
+        custom: true
+      }
+    ]
+  });
+
+  server.handleEvent({ type: "form.created", properties: { form: { ...form("frm_question-1"), metadata: { kind: "mcp-elicitation" } } } });
+  server.handleEvent({ type: "form.created", properties: { form: form("frm_question-1") } });
+  assert.deepEqual(emitted[0], {
+    type: "question.request",
+    data: {
+      turnId: "frm_question-1",
+      requestId: "frm_question-1",
+      questions: [
+        {
+          id: "frm_question-1:0",
+          header: "Platform",
+          question: "Which platform?",
+          options: [{ label: "Web", description: "Browser" }],
+          allowCustom: true
+        },
+        {
+          id: "frm_question-1:1",
+          header: "Features",
+          question: "Pick features",
+          options: [{ label: "Sharing" }, { label: "Offline" }],
+          multiSelect: true,
+          allowCustom: true
+        }
+      ]
+    }
+  });
+  assert.equal(emitted.length, 1);
+  assert.equal(await server.answerQuestion("frm_question-1", {
+    "frm_question-1:0": ["Web"],
+    "frm_question-1:1": ["Sharing", "Offline"]
+  }), true);
+  assert.equal(requests[0]?.path, "/api/session/session-1/form/frm_question-1/reply");
+  assert.deepEqual(JSON.parse(String(requests[0]?.init.body)), {
+    answer: { q0: "Web", q1: ["Sharing", "Offline"] }
+  });
+  server.handleEvent({ type: "form.created", properties: { form: form("frm_question-2") } });
+  assert.equal(await server.dismissQuestion("frm_question-2"), true);
+  assert.equal(requests[1]?.path, "/api/session/session-1/form/frm_question-2");
+  assert.equal(requests[1]?.init.method, "DELETE");
+});
+
 test("OpenCode reads API key provider fields from integration forms", async () => {
   const server = Object.assign(Object.create(OpenCodeAppServer.prototype), {
     apiKeyProviderIds: new Set<string>(),
@@ -467,6 +552,7 @@ test("OpenCode errors remain failed through idle and reset when the next turn be
   const emitted: unknown[] = [];
   const server = Object.assign(Object.create(OpenCodeAppServer.prototype), {
     openCodeSessionId: "session-1",
+    subagentSessions: new Map(),
     turnActive: true,
     turnFailure: null,
     knownAssistantMessageIds: new Set<string>(),
@@ -649,4 +735,214 @@ test("OpenCode v2 failure envelopes end a turn once", () => {
   assert.deepEqual(emitted[2], { type: "turn.status", data: { status: "failed" } });
   assert.equal(server.turnActive, false);
   assert.doesNotMatch(JSON.stringify(emitted), /private provider detail/);
+});
+
+test("OpenCode v2 task tool events report scoped native subagent lifecycle", () => {
+  const emitted: unknown[] = [];
+  const server = Object.assign(Object.create(OpenCodeAppServer.prototype), {
+    session: { runtimeProfile: "local" },
+    openCodeSessionId: "session-parent",
+    turnActive: true,
+    turnFailure: null,
+    activeAssistantMessageId: null,
+    activeSubagents: new Map(),
+    backgroundSubagentCalls: new Set(),
+    nativeToolNames: new Map(),
+    nativeToolInputs: new Map(),
+    subagentSessions: new Map(),
+    subagentChildTerminalStatuses: new Map(),
+    emit: (event: unknown) => emitted.push(event)
+  }) as {
+    handleEvent(event: { type?: unknown; data?: unknown }): void;
+  };
+
+  server.handleEvent({
+    type: "session.tool.input.started",
+    data: { sessionID: "session-parent", assistantMessageID: "assistant-1", id: "task-call-1", name: "subagent" }
+  });
+  server.handleEvent({
+    type: "session.tool.called",
+    data: {
+      sessionID: "session-parent",
+      assistantMessageID: "assistant-1",
+      id: "task-call-1",
+      input: { agent: "explore", description: "Trace the auth flow", prompt: "private prompt" },
+      executed: false
+    }
+  });
+  server.handleEvent({
+    type: "session.tool.progress",
+    data: {
+      sessionID: "session-parent",
+      assistantMessageID: "assistant-1",
+      id: "task-call-1",
+      metadata: { sessionID: "child-session", status: "running" }
+    }
+  });
+  server.handleEvent({
+    type: "session.tool.input.started",
+    data: { sessionID: "session-parent", assistantMessageID: "assistant-1", id: "task-call-background", name: "subagent" }
+  });
+  server.handleEvent({
+    type: "session.tool.called",
+    data: {
+      sessionID: "session-parent",
+      assistantMessageID: "assistant-1",
+      id: "task-call-background",
+      input: { agent: "explore", description: "Background research", background: true },
+      executed: false
+    }
+  });
+  server.handleEvent({
+    type: "session.tool.progress",
+    data: {
+      sessionID: "session-parent",
+      assistantMessageID: "assistant-1",
+      id: "task-call-background",
+      metadata: { sessionID: "child-background", status: "running" }
+    }
+  });
+  server.handleEvent({
+    type: "session.tool.success",
+    data: {
+      sessionID: "session-parent",
+      assistantMessageID: "assistant-1",
+      id: "task-call-background",
+      metadata: { sessionID: "child-background", status: "running", truncated: false }
+    }
+  });
+  server.handleEvent({
+    type: "session.execution.succeeded",
+    data: { sessionID: "child-session" }
+  });
+  server.handleEvent({
+    type: "session.execution.succeeded",
+    data: { sessionID: "child-background" }
+  });
+  server.handleEvent({
+    type: "session.tool.success",
+    data: {
+      sessionID: "session-parent",
+      assistantMessageID: "assistant-1",
+      id: "task-call-1",
+      metadata: { sessionID: "child-session", status: "running", truncated: false }
+    }
+  });
+  server.handleEvent({
+    type: "session.tool.input.started",
+    data: { sessionID: "another-parent", id: "task-call-2", name: "subagent" }
+  });
+  server.handleEvent({
+    type: "session.tool.called",
+    data: {
+      sessionID: "another-parent",
+      id: "task-call-2",
+      input: { agent: "explore", description: "Must be ignored" }
+    }
+  });
+
+  assert.deepEqual(
+    emitted.filter((event) => (event as { type: string }).type === "subagent.updated"),
+    [
+      {
+        type: "subagent.updated",
+        data: {
+          id: "task-call-1",
+          label: "explore",
+          task: "Trace the auth flow",
+          status: "running"
+        }
+      },
+      {
+        type: "subagent.updated",
+        data: {
+          id: "task-call-background",
+          label: "explore",
+          task: "Background research",
+          status: "running"
+        }
+      },
+      {
+        type: "subagent.updated",
+        data: {
+          id: "task-call-1",
+          label: "explore",
+          task: "Trace the auth flow",
+          status: "completed"
+        }
+      },
+      {
+        type: "subagent.updated",
+        data: {
+          id: "task-call-background",
+          label: "explore",
+          task: "Background research",
+          status: "completed"
+        }
+      },
+    ]
+  );
+  assert.equal(JSON.stringify(emitted).includes("private prompt"), false);
+});
+
+test("OpenCode v1 task tool part updates map native terminal states", () => {
+  const emitted: unknown[] = [];
+  const server = Object.assign(Object.create(OpenCodeAppServer.prototype), {
+    session: { runtimeProfile: "local" },
+    activeSubagents: new Map(),
+    backgroundSubagentCalls: new Set(),
+    nativeToolNames: new Map(),
+    nativeToolInputs: new Map(),
+    subagentSessions: new Map(),
+    subagentChildTerminalStatuses: new Map(),
+    partKinds: new Map(),
+    emit: (event: unknown) => emitted.push(event)
+  }) as {
+    handlePart(part: Record<string, unknown>): void;
+  };
+
+  server.handlePart({
+    id: "task-call-v1",
+    type: "tool",
+    name: "task",
+    state: {
+      status: "running",
+      input: { agent: "reviewer", description: "Review the change" },
+      metadata: { sessionId: "child-session" }
+    }
+  });
+  server.handlePart({
+    id: "task-call-v1",
+    type: "tool",
+    name: "task",
+    state: {
+      status: "error",
+      input: { agent: "reviewer", description: "Review the change" },
+      metadata: { sessionId: "child-session", interrupted: true }
+    }
+  });
+
+  assert.deepEqual(
+    emitted.filter((event) => (event as { type: string }).type === "subagent.updated"),
+    [
+      {
+        type: "subagent.updated",
+        data: {
+          id: "task-call-v1",
+          label: "reviewer",
+          task: "Review the change",
+          status: "running"
+        }
+      },
+      {
+        type: "subagent.updated",
+        data: {
+          id: "task-call-v1",
+          label: "reviewer",
+          task: "Review the change",
+          status: "interrupted"
+        }
+      }
+    ]
+  );
 });

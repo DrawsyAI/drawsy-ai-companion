@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import type { AgentMetadata } from "./protocol.js";
+import type { AgentMetadata, BridgeEvent } from "./protocol.js";
 import { deepSeekSdkArguments, DeepSeekAppServer, DeepSeekSdkProcess, drawsyMcpOverlay } from "./deepseek-app-server.js";
 
 test("DeepSeek Harness launches the native SDK profile with an additive patch", () => {
@@ -21,7 +21,7 @@ test("DeepSeek Harness launches the native SDK profile with an additive patch", 
   assert.doesNotMatch(overlay, /- remove:|disabled: true/);
 });
 
-test("DeepSeek SDK process correlates JSON-RPC replies and forwards notifications", async () => {
+test("DeepSeek SDK process answers native host requests while a client request waits", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "drawsy-deepseek-sdk-"));
   const script = path.join(root, "peer.mjs");
   await writeFile(script, `
@@ -33,16 +33,54 @@ process.stdin.on("data", chunk => {
   while ((at = pending.indexOf("\\n")) >= 0) {
     const line = pending.slice(0, at); pending = pending.slice(at + 1);
     const request = JSON.parse(line);
-    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", method: "session.status", params: { sessionId: "s", status: "running" } }) + "\\n");
-    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { ok: request.method } }) + "\\n");
+    if (request.method === "session/query") {
+      process.stdout.write(JSON.stringify({ jsonrpc: "2.0", method: "session.status", params: { sessionId: "s", status: "running" } }) + "\\n");
+      process.stdout.write(JSON.stringify({
+        jsonrpc: "2.0", id: 1, method: "user-question/ask",
+        params: { requestId: "question-1", sessionId: "s", questions: [
+          { id: "name", question: "Name?" },
+          { id: "color", question: "Colors?", options: [{ label: "Blue" }], multiSelect: true }
+        ] }
+      }) + "\\n");
+    } else if (request.id === 1 && request.result) {
+      process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: "1", result: request.result }) + "\\n");
+    }
   }
 });
 `);
   const notices: string[] = [];
-  const rpc = new DeepSeekSdkProcess((method) => notices.push(method));
+  let receiveQuestion!: (event: Extract<BridgeEvent, { type: "question.request" }>) => void;
+  const question = new Promise<Extract<BridgeEvent, { type: "question.request" }>>((resolve) => {
+    receiveQuestion = resolve;
+  });
+  const rpc = new DeepSeekSdkProcess(
+    (method) => notices.push(method),
+    (id, method, params) => internal.handleRequest(rpc, id, method, params)
+  );
+  const server = Object.assign(Object.create(DeepSeekAppServer.prototype), {
+    session: { nativeSessionId: "s" },
+    rpc, turnToken: "turn-1", pendingQuestions: new Map(),
+    emit: (event: BridgeEvent) => {
+      if (event.type === "question.request") receiveQuestion(event);
+    }
+  }) as DeepSeekAppServer;
+  const internal = server as unknown as {
+    handleRequest(rpc: DeepSeekSdkProcess, id: string | number, method: string, params: Record<string, unknown>): void;
+  };
   try {
     rpc.start(process.execPath, [script], { cwd: root, env: process.env, detached: false });
-    assert.deepEqual(await rpc.request("initialize"), { ok: "initialize" });
+    const query = rpc.request("session/query", {}, 2_000);
+    const event = await Promise.race([question, query.then(() => { throw new Error("Query completed before the question."); })]);
+    assert.equal(event.data.requestId, "question-1");
+    assert.equal(event.data.turnId, "turn-1");
+    assert.equal(await server.answerQuestion("question-1", { name: ["Drawsy"], color: ["Blue", "Green"] }), true);
+    assert.deepEqual(await query, {
+      answers: [
+        { id: "name", selected: [], custom: "Drawsy" },
+        { id: "color", selected: ["Blue"], custom: "Green" }
+      ]
+    });
+    assert.equal(await server.dismissQuestion("question-1"), false);
     assert.deepEqual(notices, ["session.status"]);
   } finally {
     await rpc.close(); await rm(root, { recursive: true, force: true });
@@ -157,6 +195,7 @@ for await (const line of readline.createInterface({input:process.stdin})) {
   };
   const server = Object.assign(Object.create(DeepSeekAppServer.prototype), {
     folderPath: root, markerPath: path.join(root, "session-created"),
+    pendingQuestions: new Map(),
     session: { id: "test", secret: "test", bridgeUrl: "http://127.0.0.1:1", runtimePath: root,
       nativeSessionId: "native-session", deepseekBinary: binary, surfaceKind: "canvas", workspaceMode: "private", isolateProcessGroup: false },
     loadModelCatalog: async () => catalog,
@@ -190,4 +229,29 @@ test("DeepSeek prevents model changes from racing an active turn", async () => {
     startingTurn: false, turnActive: true, updatingSettings: false
   }) as DeepSeekAppServer;
   await assert.rejects(server.updateSettings({ model: "other" }), /operation to finish/);
+});
+
+test("DeepSeek native child notifications stay scoped to the conversation tree", () => {
+  const events: BridgeEvent[] = [];
+  const server = Object.assign(Object.create(DeepSeekAppServer.prototype), {
+    session: { nativeSessionId: "root" },
+    subagentSessions: new Set(),
+    emit: (event: BridgeEvent) => events.push(event)
+  }) as { handleNotification(method: string, params: Record<string, unknown>): void };
+  server.handleNotification("subagent.started", { parentSessionId: "unrelated", childSessionId: "other" });
+  server.handleNotification("subagent.started", { parentSessionId: "root", childSessionId: "child" });
+  server.handleNotification("session.status", { sessionId: "child", status: "running" });
+  server.handleNotification("subagent.finished", {
+    parentSessionId: "child", childSessionId: "nested", status: "error", stopReason: "aborted"
+  });
+  server.handleNotification("subagent.finished", {
+    parentSessionId: "root", childSessionId: "child", status: "ok", stopReason: "completed",
+    lastAssistantMessage: [{ type: "text", text: "Research complete." }]
+  });
+  assert.deepEqual(events, [
+    { type: "subagent.updated", data: { id: "child", status: "unknown" } },
+    { type: "subagent.updated", data: { id: "child", status: "running" } },
+    { type: "subagent.updated", data: { id: "nested", status: "interrupted" } },
+    { type: "subagent.updated", data: { id: "child", status: "completed", detail: "Research complete.", output: "Research complete." } }
+  ]);
 });
