@@ -1,3 +1,4 @@
+import { isAcpEngine } from "./acp-binary.js";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -28,6 +29,8 @@ export type LocalConversationPreferences = {
   pi: LocalAgentPreference;
   omp: LocalAgentPreference;
   deepseek: LocalAgentPreference;
+  antigravity?: LocalAgentPreference;
+  claude?: LocalAgentPreference;
   updatedAt: number;
 };
 
@@ -75,6 +78,8 @@ export const defaultConversationPreferences = (): LocalConversationPreferences =
   pi: emptyPreference(),
   omp: emptyPreference(),
   deepseek: emptyPreference(),
+  antigravity: emptyPreference(),
+  claude: emptyPreference(),
   updatedAt: 0
 });
 
@@ -96,7 +101,7 @@ const localStateDirectory = () => {
 };
 
 export const isAgentEngine = (value: unknown): value is AgentEngine =>
-  value === "codex" || value === "opencode" || value === "pi" || value === "omp" || value === "deepseek";
+  value === "codex" || value === "opencode" || value === "pi" || value === "omp" || value === "deepseek" || isAcpEngine(value);
 
 const isAccessMode = (value: unknown): value is AgentAccessMode =>
   value === "workspace" || value === "readOnly";
@@ -172,6 +177,8 @@ export class LocalConversationStore {
         pi: readPreference(preferencesRecord.pi),
         omp: readPreference(preferencesRecord.omp),
         deepseek: readPreference(preferencesRecord.deepseek),
+        antigravity: readPreference(preferencesRecord.antigravity),
+        claude: readPreference(preferencesRecord.claude),
         updatedAt: typeof preferencesRecord.updatedAt === "number" ? preferencesRecord.updatedAt : 0
       } satisfies LocalConversationPreferences;
       const conversations = Array.isArray(record.conversations)
@@ -336,7 +343,7 @@ export class LocalConversationStore {
     engine: AgentEngine,
     nativeSessionId: string | null
   ) {
-    if (engine === "pi" || engine === "omp" || engine === "deepseek") {
+    if (engine === "pi" || engine === "omp" || engine === "deepseek" || isAcpEngine(engine)) {
       const conversation = await this.get(id);
       if (!conversation) throw new Error("Conversation does not exist locally.");
       return conversation;
@@ -365,6 +372,8 @@ export class LocalConversationStore {
         pi: readPreference(input.pi),
         omp: readPreference(input.omp),
         deepseek: readPreference(input.deepseek),
+        antigravity: readPreference(input.antigravity),
+        claude: readPreference(input.claude),
         updatedAt: Date.now()
       };
       return structuredClone(this.data.preferences);

@@ -225,6 +225,52 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
     assert.equal(invalid.isError, true);
     assert.equal(libraryRequests.length, 3, "invalid requests must not reach the bridge");
     const tools = await client.listTools();
+    const controlSchema = tools.tools.find((tool) => tool.name === "control_canvas")?.inputSchema;
+    assert.equal(controlSchema?.type, "object");
+    assert.deepEqual(controlSchema.required, ["action"]);
+    type FieldSchema = {
+      type?: string;
+      enum?: string[];
+      items?: FieldSchema;
+      minItems?: number;
+      maxItems?: number;
+      properties?: Record<string, FieldSchema>;
+    };
+    const fields = controlSchema.properties as Record<string, FieldSchema> | undefined;
+    assert.ok(fields?.action?.enum?.includes("set_viewport"));
+    assert.ok(fields?.action?.enum?.includes("drag"));
+    assert.equal(fields?.zoom?.type, "number");
+    assert.equal(fields?.center?.items?.type, "number");
+    assert.equal(fields?.center?.minItems, 2);
+    assert.equal(fields?.center?.maxItems, 2);
+    assert.equal(fields?.points?.items?.items?.type, "number");
+    assert.equal(fields?.style?.properties?.opacity?.type, "number");
+
+    for (const args of [
+      { action: "set_viewport", zoom: 0.5, center: [-200, 40] },
+      { action: "drag", tool: "rectangle", start: [10, 20], end: [100, 80] },
+      { action: "gesture", points: [[10, 20], [100, 80]] },
+      { action: "set_arrowhead", end: "end", arrowhead: null },
+      { action: "set_style", style: { opacity: 70 } }
+    ]) {
+      appliedBody = "";
+      const result = await client.callTool({ name: "control_canvas", arguments: args });
+      assert.notEqual(result.isError, true);
+      assert.deepEqual(JSON.parse(appliedBody), args);
+    }
+    for (const args of [
+      { action: "set_viewport", zoom: "0.5", center: "[-200,40]" },
+      { action: "set_viewport", zoom: 0.5, center: [40] },
+      { action: "set_viewport", center: [-200, 40] },
+      { action: "set_viewport", zoom: 0.5, points: [[10, 20], [100, 80]] },
+      { action: "drag", start: [10, 20], end: "end" }
+    ]) {
+      appliedBody = "";
+      const result = await client.callTool({ name: "control_canvas", arguments: args });
+      assert.equal(result.isError, true);
+      assert.equal(appliedBody, "");
+    }
+
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
       "add_image_from_file",
       "apply_canvas_changes",
@@ -330,15 +376,6 @@ test("stdio MCP exposes only current-canvas tools and authenticates to loopback"
       containerId: "node-1", text: "A label"
     });
     assert.match(JSON.stringify(label.content), /text-1/);
-    appliedBody = "";
-    const control = await client.callTool({
-      name: "control_canvas",
-      arguments: { action: "drag", tool: "rectangle", start: [10, 20], end: [100, 80] }
-    });
-    assert.equal(control.isError, undefined);
-    assert.deepEqual(JSON.parse(appliedBody), {
-      action: "drag", tool: "rectangle", start: [10, 20], end: [100, 80]
-    });
     appliedBody = "";
     const invalidControl = await client.callTool({
       name: "control_canvas",

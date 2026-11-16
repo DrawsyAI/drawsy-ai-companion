@@ -319,189 +319,73 @@ if (surfaceKind === "canvas" || surfaceKind === "presentation") {
     })
   );
 
+  const sceneCoordinate = z.number().finite().min(-1_000_000).max(1_000_000);
+  const scenePoint = z.array(sceneCoordinate).length(2);
+  const canvasColor = z.string().regex(/^#(?:[\da-fA-F]{3,4}|[\da-fA-F]{6}|[\da-fA-F]{8})$|^transparent$/);
+
   server.registerTool(
     "control_canvas",
     {
       description:
         "Use this for every Draw mode canvas change. It drives Drawsy's own canvas pointer handlers, so click and drag gestures draw, select, move, resize, erase, pan, and fill using the active tool. Read read_current_canvas for scene bounds, viewport zoom and screen size. set_viewport changes the private working zoom and scene center. set_tool selects a native canvas tool, set_style changes current drawing settings or the selected elements, and type_text places editable text with the Text tool. gesture sends a pointer path through the active tool, whose native behavior determines the geometry; drag is one completed drag; draw_freehand selects Pencil for a continuous stroke. Results report activeTool because a tool can return to Selection after release. A pointer action is one press-move-release sequence and is visible while it runs. This controls only the attached Drawsy canvas; it does not access browser tabs or other pages. Image insertion needs an image asset and is not available through this pointer tool.",
-      inputSchema: z.discriminatedUnion("action", [
-        z.object({
-          action: z.literal("set_viewport"),
-          zoom: z.number().finite().min(0.1).max(30).describe("Zoom factor, where 1 means 100%."),
-          center: z.tuple([
-            z.number().finite().min(-1_000_000).max(1_000_000),
-            z.number().finite().min(-1_000_000).max(1_000_000)
-          ]).optional().describe("Center in scene coordinates; defaults to the current center.")
-        }).strict(),
-        z.object({
-          action: z.literal("set_arrowhead"),
-          end: z.enum(["start", "end"]),
-          arrowhead: z.string().regex(/^[a-z_]{1,64}$/).nullable()
-        }).strict(),
-        z.object({
-          action: z.literal("erase_area"),
-          elementIds: z.array(z.string().min(1).max(128)).min(1).max(100),
-          points: z.array(z.tuple([
-            z.number().finite().min(-1_000_000).max(1_000_000),
-            z.number().finite().min(-1_000_000).max(1_000_000)
-          ])).min(2).max(512),
-          size: z.number().int().min(8).max(64)
-        }).strict(),
-        z.object({
-          action: z.literal("set_arrow_type"),
-          arrowType: z.enum(["sharp", "round", "elbow"])
-        }).strict(),
-        z.object({
-          action: z.literal("erase_objects"),
-          elementIds: z.array(z.string().min(1).max(128)).min(1).max(100)
-        }).strict(),
-        z.object({
-          action: z.literal("set_eraser"),
-          mode: z.enum(["area", "object"]),
-          size: z.number().int().min(8).max(64).optional()
-        }).strict(),
-        z.object({
-          action: z.literal("insert_library"),
-          source: z.literal("public").optional(),
-          packId: z.string().trim().min(1).max(256),
-          itemId: z.string().trim().min(1).max(256),
-          x: z.number().finite().min(-1_000_000).max(1_000_000),
-          y: z.number().finite().min(-1_000_000).max(1_000_000),
-          operationId: z.string().trim().min(1).max(128)
-        }).strict(),
-        z.object({
-          action: z.literal("click"),
-          x: z.number().finite().min(-1_000_000).max(1_000_000),
-          y: z.number().finite().min(-1_000_000).max(1_000_000)
-        }).strict(),
-        z.object({
-          action: z.literal("select"),
-          elementIds: z.array(z.string().trim().min(1).max(128)).min(1).max(100)
-        }).strict().refine(
-          ({ elementIds }) => new Set(elementIds).size === elementIds.length,
-          { path: ["elementIds"], message: "Element IDs must be unique." }
-        ),
-        z.object({ action: z.literal("clear_selection") }).strict(),
-        z.object({
-          action: z.literal("set_tool"),
-          tool: z.enum([
-            "selection",
-            "lasso",
-            "rectangle",
-            "ellipse",
-            "diamond",
-            "line",
-            "arrow",
-            "freedraw",
-            "text",
-            "eraser",
-            "hand",
-            "frame",
-            "magicframe",
-            "embeddable",
-            "laser",
-            "bucketfill"
-          ]),
-          shapeKind: z.string().trim().min(1).max(128).optional()
-        }).strict(),
-        z.object({
-          action: z.literal("drag"),
-          tool: z.enum([
-            "selection",
-            "lasso",
-            "rectangle",
-            "ellipse",
-            "diamond",
-            "line",
-            "arrow",
-            "freedraw",
-            "text",
-            "eraser",
-            "hand",
-            "frame",
-            "magicframe",
-            "embeddable",
-            "laser",
-            "bucketfill"
-          ]).optional(),
-          start: z.tuple([
-            z.number().finite().min(-1_000_000).max(1_000_000),
-            z.number().finite().min(-1_000_000).max(1_000_000)
-          ]),
-          end: z.tuple([
-            z.number().finite().min(-1_000_000).max(1_000_000),
-            z.number().finite().min(-1_000_000).max(1_000_000)
-          ])
-        }).strict().refine(
-          ({ start, end, tool }) =>
-            Math.max(Math.abs(start[0] - end[0]), Math.abs(start[1] - end[1])) <=
-              1_000_000 &&
-            (start[0] !== end[0] || start[1] !== end[1]) &&
-            (!(tool === "rectangle" || tool === "ellipse" || tool === "diamond" || tool === "frame" || tool === "magicframe" || tool === "embeddable") ||
-              (start[0] !== end[0] && start[1] !== end[1])),
-          {
-            message:
-              "A line or arrow needs a nonzero length; closed shapes need both width and height, up to 1,000,000 scene units."
-          }
-        ),
-        z.object({
-          action: z.literal("draw_freehand"),
-          points: z.array(
-            z.array(z.number().finite().min(-1_000_000).max(1_000_000)).length(2)
-          ).min(2).max(512)
-        }).strict(),
-        z.object({
-          action: z.literal("gesture"),
-          points: z.array(
-            z.array(z.number().finite().min(-1_000_000).max(1_000_000)).length(2)
-          ).min(2).max(512),
-          tool: z.enum([
-            "selection",
-            "lasso",
-            "rectangle",
-            "ellipse",
-            "diamond",
-            "line",
-            "arrow",
-            "freedraw",
-            "text",
-            "eraser",
-            "hand",
-            "frame",
-            "magicframe",
-            "embeddable",
-            "laser",
-            "bucketfill"
-          ]).optional()
-        }).strict(),
-        z.object({
-          action: z.literal("type_text"),
-          x: z.number().finite().min(-1_000_000).max(1_000_000),
-          y: z.number().finite().min(-1_000_000).max(1_000_000),
-          text: z.string().trim().min(1).max(4_000)
-        }).strict(),
-        z.object({
-          action: z.literal("set_style"),
-          target: z.enum(["current", "selection"]).optional(),
-          elementIds: z.array(z.string().trim().min(1).max(128)).min(1).max(100).optional(),
-          style: z.object({
-            strokeColor: z.string().regex(/^#(?:[\da-fA-F]{3,4}|[\da-fA-F]{6}|[\da-fA-F]{8})$|^transparent$/),
-            backgroundColor: z.string().regex(/^#(?:[\da-fA-F]{3,4}|[\da-fA-F]{6}|[\da-fA-F]{8})$|^transparent$/),
-            fillStyle: z.enum(["hachure", "cross-hatch", "solid", "zigzag", "dots"]),
-            dimensionality: z.enum(["2d", "3d"]),
-            strokeWidth: z.number().finite().min(1).max(24),
-            strokeStyle: z.enum(["solid", "dashed", "dotted"]),
-            roughness: z.number().finite().min(0).max(3),
-            opacity: z.number().finite().min(0).max(100),
-            fontFamily: z.number().int().refine((value) => [1, 2, 3, 5, 6, 7, 8, 9, 10].includes(value)),
-            fontSize: z.number().finite().min(1).max(512),
-            textAlign: z.enum(["left", "center", "right"])
-          }).partial().strict().refine((style) => Object.keys(style).length > 0)
-        }).strict().refine(
-          ({ target, elementIds }) => target !== "current" || elementIds === undefined,
-          { message: "elementIds can only be used when target is selection." }
-        )
-      ]),
+      // The MCP SDK advertises an empty object for a top-level union.
+      // Publish typed fields and let parseCanvasControlRequest enforce each action's contract.
+      inputSchema: z.object({
+        action: z.enum([
+          "set_viewport", "set_arrowhead", "erase_area", "set_arrow_type",
+          "erase_objects", "set_eraser", "insert_library", "click", "select",
+          "clear_selection", "set_tool", "drag", "draw_freehand", "gesture",
+          "type_text", "set_style"
+        ]),
+        zoom: z.number().finite().min(0.1).max(30).optional()
+          .describe("Required for set_viewport. Zoom factor, where 1 means 100%."),
+        center: scenePoint.optional()
+          .describe("Optional [x, y] scene center for set_viewport."),
+        tool: z.enum([
+          "selection", "lasso", "rectangle", "ellipse", "diamond", "line",
+          "arrow", "freedraw", "text", "eraser", "hand", "frame", "magicframe",
+          "embeddable", "laser", "bucketfill"
+        ]).optional().describe("Required for set_tool. Optional override for drag or gesture."),
+        shapeKind: z.string().trim().min(1).max(128).optional()
+          .describe("Optional shape variant when setting the rectangle tool."),
+        x: sceneCoordinate.optional().describe("Scene x for click, type_text, or insert_library."),
+        y: sceneCoordinate.optional().describe("Scene y for click, type_text, or insert_library."),
+        start: scenePoint.optional().describe("[x, y] scene start for drag."),
+        end: z.union([scenePoint, z.enum(["start", "end"])]).optional()
+          .describe("[x, y] scene destination for drag, or the endpoint name for set_arrowhead."),
+        points: z.array(scenePoint).min(2).max(512).optional()
+          .describe("Ordered [x, y] scene points for gesture, draw_freehand, or erase_area."),
+        text: z.string().trim().min(1).max(4_000).optional()
+          .describe("Text to place with type_text."),
+        arrowType: z.enum(["sharp", "round", "elbow"]).optional()
+          .describe("Arrow type for set_arrow_type."),
+        arrowhead: z.string().regex(/^[a-z_]{1,64}$/).nullable().optional()
+          .describe("Arrowhead name for set_arrowhead, or null to remove it."),
+        elementIds: z.array(z.string().min(1)).min(1).max(100).optional()
+          .describe("Target IDs for select, erase_objects, erase_area, or selection styling."),
+        mode: z.enum(["area", "object"]).optional().describe("Eraser mode for set_eraser."),
+        size: z.number().int().min(8).max(64).optional()
+          .describe("Required brush size for erase_area, optional when setting area eraser mode."),
+        source: z.literal("public").optional().describe("Library source for insert_library."),
+        packId: z.string().trim().min(1).max(256).optional().describe("Library pack for insert_library."),
+        itemId: z.string().trim().min(1).max(256).optional().describe("Library item for insert_library."),
+        operationId: z.string().trim().min(1).max(128).optional()
+          .describe("Insertion identifier for insert_library. Reuse for retries of the same insertion."),
+        target: z.enum(["current", "selection"]).optional().describe("Style target for set_style."),
+        style: z.object({
+          strokeColor: canvasColor,
+          backgroundColor: canvasColor,
+          fillStyle: z.enum(["hachure", "cross-hatch", "solid", "zigzag", "dots"]),
+          dimensionality: z.enum(["2d", "3d"]),
+          strokeWidth: z.number().finite().min(1).max(24),
+          strokeStyle: z.enum(["solid", "dashed", "dotted"]),
+          roughness: z.number().finite().min(0).max(3),
+          opacity: z.number().finite().min(0).max(100),
+          fontFamily: z.number().int().refine((value) => [1, 2, 3, 5, 6, 7, 8, 9, 10].includes(value)),
+          fontSize: z.number().finite().min(1).max(512),
+          textAlign: z.enum(["left", "center", "right"])
+        }).partial().strict().optional().describe("Properties to change with set_style.")
+      }).strict(),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -510,10 +394,15 @@ if (surfaceKind === "canvas" || surfaceKind === "presentation") {
     },
     async (input) => {
       try {
+        const request = parseCanvasControlRequest(
+          input.elementIds && (input.action === "select" || input.action === "set_style")
+            ? { ...input, elementIds: input.elementIds.map((id) => id.trim()) }
+            : input
+        );
         return {
           content: [{
             type: "text",
-            text: await callBridge("control", parseCanvasControlRequest(input))
+            text: await callBridge("control", request)
           }]
         };
       } catch (error) {

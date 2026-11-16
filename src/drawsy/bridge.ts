@@ -1,3 +1,5 @@
+import { AcpAppServer } from "./acp-app-server.js";
+import { isAcpEngine } from "./acp-binary.js";
 import { QUESTION_TOOL_TIMEOUT_MS, questionToolInput, type QuestionToolReply } from "./question-tool.js";
 import { withBrowserTabContext } from "./conversation-history.js";
 import { BrowserTabs } from "./browser-tabs.js";
@@ -212,7 +214,7 @@ type Session = {
   turnStartPending: boolean;
   connectorBackendUrl: URL | null;
   engine: AgentEngine;
-  agent: CodexAppServer | OpenCodeAppServer | PiAppServer | DeepSeekAppServer;
+  agent: CodexAppServer | OpenCodeAppServer | PiAppServer | DeepSeekAppServer | AcpAppServer;
   previewPort: number | null;
   touchedAt: number;
 };
@@ -387,9 +389,9 @@ const parseLocalPreferences = (
 ): Omit<LocalConversationPreferences, "updatedAt"> => {
   if (
     Object.keys(value).some(
-      (key) => key !== "engine" && key !== "codex" && key !== "opencode" && key !== "pi" && key !== "omp" && key !== "deepseek"
+      (key) => key !== "engine" && key !== "codex" && key !== "opencode" && key !== "pi" && key !== "omp" && key !== "deepseek" && !isAcpEngine(key)
     ) ||
-    (value.engine !== "codex" && value.engine !== "opencode" && value.engine !== "pi" && value.engine !== "omp" && value.engine !== "deepseek")
+    (value.engine !== "codex" && value.engine !== "opencode" && value.engine !== "pi" && value.engine !== "omp" && value.engine !== "deepseek" && !isAcpEngine(value.engine))
   ) {
     throw new BridgeRequestError(
       400,
@@ -465,7 +467,9 @@ const parseLocalPreferences = (
     opencode: parsePreference(value.opencode),
     pi: parsePreference(value.pi ?? {}),
     omp: parsePreference(value.omp ?? {}),
-    deepseek: parsePreference(value.deepseek ?? {})
+    deepseek: parsePreference(value.deepseek ?? {}),
+    antigravity: parsePreference(value.antigravity ?? {}),
+    claude: parsePreference(value.claude ?? {})
   };
 };
 
@@ -2071,7 +2075,7 @@ export const createDrawsyBridge = (
           return;
         }
         const validatedSurfaceKind = surfaceKind as DrawsySurfaceKind;
-        if (engine !== "codex" && engine !== "opencode" && engine !== "pi" && engine !== "omp" && engine !== "deepseek") {
+        if (engine !== "codex" && engine !== "opencode" && engine !== "pi" && engine !== "omp" && engine !== "deepseek" && !isAcpEngine(engine)) {
           json(response, 400, {
             error: {
               code: "engine_invalid",
@@ -2284,7 +2288,7 @@ export const createDrawsyBridge = (
               startupSubagents.push(event);
             }
           };
-          let agent: CodexAppServer | OpenCodeAppServer | PiAppServer | DeepSeekAppServer;
+          let agent: CodexAppServer | OpenCodeAppServer | PiAppServer | DeepSeekAppServer | AcpAppServer;
           try {
             await prepareContextStore(folder.path);
             const agentOptions = {
@@ -2303,6 +2307,14 @@ export const createDrawsyBridge = (
             if (engine === "pi" || engine === "omp") {
               const runtimePath = path.join(localConversations.stateDirectory, engine, conversationId);
               agent = await PiAppServer.start(folder.path, { ...agentOptions, engine, piBinary: engine === "omp" ? resolveOmpBinary() : resolvePiBinary(), runtimePath, sessionDir: path.join(runtimePath, "sessions"), nativeSessionId: conversationId }, onAgentEvent);
+              hadNativeSession = agent.resumed;
+            } else if (isAcpEngine(engine)) {
+              agent = await AcpAppServer.start(folder.path, {
+                ...agentOptions,
+                engine,
+                runtimePath: path.join(localConversations.stateDirectory, engine, conversationId),
+                hasSavedMessages: localConversation.messageCount > 0
+              }, onAgentEvent);
               hadNativeSession = agent.resumed;
             } else if (engine === "deepseek") {
               const runtimePath = path.join(localConversations.stateDirectory, "deepseek", conversationId);

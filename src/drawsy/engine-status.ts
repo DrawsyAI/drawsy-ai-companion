@@ -1,3 +1,4 @@
+import { readAcpStatus, type AcpEngine } from "./acp-binary.js";
 import { detectCodexBinary } from "./codex-binary.js";
 import { detectOpenCodeBinary } from "./opencode-binary.js";
 import { detectPiBinary } from "./pi-binary.js";
@@ -5,7 +6,7 @@ import { detectOmpBinary } from "./omp-binary.js";
 import { detectDeepSeekBinary } from "./deepseek-binary.js";
 
 export type LocalEngineStatus = {
-  id: "codex" | "opencode" | "pi" | "omp" | "deepseek";
+  id: "codex" | "opencode" | "pi" | "omp" | "deepseek" | AcpEngine;
   name: string;
   installed: boolean;
   path?: string;
@@ -33,6 +34,8 @@ export const readLocalEngineStatus = (): LocalEngineStatus[] => {
     },
     { id: "pi", name: "Pi", installed: Boolean(pi), ...(pi || {}) },
     { id: "omp", name: "Oh My Pi", installed: Boolean(omp), ...(omp || {}) },
-    { id: "deepseek", name: "DeepSeek", installed: Boolean(deepSeek), ...(deepSeek || {}) }
+    { id: "deepseek", name: "DeepSeek", installed: Boolean(deepSeek), ...(deepSeek || {}) },
+    readAcpStatus("antigravity"),
+    readAcpStatus("claude")
   ];
 };
