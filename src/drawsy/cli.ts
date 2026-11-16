@@ -22,6 +22,11 @@ const entry = fileURLToPath(import.meta.url);
 const manifest = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8")) as { version: string };
 type Runtime = { pid: number; port: number; token: string; version: string };
 
+process.on("error", (err: NodeJS.ErrnoException) => {
+  if (err.code === "EPIPE" || err.code === "ERR_IPC_CHANNEL_CLOSED") return;
+  throw err;
+});
+
 const alive = (pid: number) => {
   try { process.kill(pid, 0); return true; }
   catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
@@ -43,14 +48,25 @@ const readRuntime = async (): Promise<Runtime | null> => {
 const control = async (operation: "status" | "stop") => {
   const record = await readRuntime();
   if (!record || !alive(record.pid)) return null;
-  const response = await fetch(`http://127.0.0.1:${record.port}/${operation}`, {
-    method: "POST", headers: { authorization: `Bearer ${record.token}` },
-    signal: AbortSignal.timeout(3000),
-  });
-  if (!response.ok) throw new Error("Could not authenticate the running CLI. No process was stopped.");
-  const result = await response.json() as { service: string; version: string; pid: number };
-  if (result.service !== "drawsy-companion-cli" || result.pid !== record.pid) throw new Error("Unexpected background process. No process was stopped.");
-  return result;
+  try {
+    const response = await fetch(`http://127.0.0.1:${record.port}/${operation}`, {
+      method: "POST", headers: { authorization: `Bearer ${record.token}` },
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!response.ok) {
+      if (operation === "status") return null;
+      throw new Error("Could not authenticate the running CLI. No process was stopped.");
+    }
+    const result = await response.json() as { service: string; version: string; pid: number };
+    if (result.service !== "drawsy-companion-cli" || result.pid !== record.pid) {
+      if (operation === "status") return null;
+      throw new Error("Unexpected background process. No process was stopped.");
+    }
+    return result;
+  } catch (error) {
+    if (operation === "status") return null;
+    throw error;
+  }
 };
 
 const bridgePresent = async () => {
@@ -102,9 +118,9 @@ const acquire = async () => {
     // cannot reach this cleanup concurrently.
     const record = await readRuntime();
     if (record && alive(record.pid)) throw new Error("Companion CLI is already running. Use drawsy-companion status.");
-    const info = await stat(lockDirectory);
-    if (!record && Date.now() - info.mtimeMs < 30_000) throw new Error("Companion is starting. Try again shortly.");
-    await rm(lockDirectory, { recursive: true });
+    const info = await stat(lockDirectory).catch(() => null);
+    if (!record && info && Date.now() - info.mtimeMs < 30_000) throw new Error("Companion is starting. Try again shortly.");
+    await rm(lockDirectory, { recursive: true, force: true });
     await mkdir(lockDirectory, { mode: 0o700 });
   }
 };
@@ -165,8 +181,26 @@ const serve = async (backgroundLog: boolean) => {
       includeLinks: !backgroundLog,
       hint: backgroundLog ? `Local bridge ready at ${bridge.address}.` : "Press Ctrl+C to stop.",
     });
-    process.send?.({ ready: true });
-    process.disconnect?.();
+    if (process.connected) {
+      try {
+        process.send?.({ ready: true }, (err) => {
+          if (err && (err as NodeJS.ErrnoException).code !== "EPIPE" && (err as NodeJS.ErrnoException).code !== "ERR_IPC_CHANNEL_CLOSED") {
+            // Broken IPC pipe is ignored if parent timed out or exited
+          }
+        });
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "EPIPE" && (err as NodeJS.ErrnoException).code !== "ERR_IPC_CHANNEL_CLOSED") {
+          throw err;
+        }
+      }
+    }
+    try {
+      process.disconnect?.();
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EPIPE" && (err as NodeJS.ErrnoException).code !== "ERR_IPC_CHANNEL_CLOSED") {
+        throw err;
+      }
+    }
   } catch (error) {
     // close also clears the bridge's timer when listen failed. Preserve the
     // original startup failure (including an occupied port) during cleanup.
@@ -189,14 +223,15 @@ const start = async () => {
   const indicator = startDrawsyIndicator("Starting local Companion");
   try {
     await new Promise<void>((resolve, reject) => {
-      const child = spawn(process.execPath, [entry, "serve"], {
+      const child = spawn(process.execPath, [entry, "serve", "--background-log"], {
         detached: true, windowsHide: true, cwd: homedir(),
         stdio: ["ignore", output.fd, output.fd, "ipc"],
       });
       const timer = setTimeout(() => {
-        child.disconnect(); child.unref();
+        try { child.disconnect(); } catch {}
+        child.unref();
         reject(new Error("Startup is taking longer than expected. Check drawsy-companion status and logs."));
-      }, 15_000);
+      }, 30_000);
       child.once("error", (error) => { clearTimeout(timer); reject(error); });
       child.once("exit", (code) => { clearTimeout(timer); reject(new Error(`Companion exited (${code}). Run drawsy-companion logs.`)); });
       child.once("message", () => {
