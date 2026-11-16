@@ -308,7 +308,7 @@ export type AgentMetadata = {
 
 export type AgentAccessMode = "workspace" | "readOnly";
 
-export type AgentEngine = "codex" | "opencode" | "pi" | "omp" | "deepseek";
+export type AgentEngine = "codex" | "opencode" | "pi" | "omp" | "deepseek" | "antigravity" | "claude";
 
 export type AgentModelOption = {
   id: string;

@@ -66,6 +66,8 @@ export const createWindowsStatusPage = (version: string, illustration: string) =
       <span class="status" id="pi">Checking Pi</span>
       <span class="status" id="omp">Checking Oh My Pi</span>
       <span class="status" id="deepseek">Checking DeepSeek</span>
+      <span class="status" id="antigravity">Checking Antigravity</span>
+      <span class="status" id="claude">Checking Claude ACP</span>
     </div>
   </main>
   <footer><span>Stays running when you close this window.</span><span>v${escapeHtml(version)}</span></footer>

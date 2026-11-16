@@ -1,7 +1,5 @@
 import { extractUserPrompt } from "./conversation-history.js";
-import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { StringDecoder } from "node:string_decoder";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,7 +10,7 @@ import type {
 } from "./protocol.js";
 import { isRecord } from "./protocol.js";
 import { inclusiveTokenCount, usageEvent } from "./agent-usage.js";
-import { spawnNativeCli, forceStopNativeCli } from "./native-cli.js";
+import { StdioJsonRpc } from "./stdio-json-rpc.js";
 import { FAST_MODE_INSTRUCTION, getDeveloperInstructions, loadBundledFastDiagramSkill, loadBundledSkill, loadBundledSkills } from "./codex-app-server.js";
 import { drawsyMcpProcess, resolveDrawsyMcpEntry } from "./mcp-launcher.js";
 import { executableEnvironment } from "./executable-resolver.js";
@@ -26,106 +24,15 @@ type SessionConfig = {
 };
 type Rpc = Record<string, unknown>;
 type RpcId = string | number;
-type Pending = { resolve(value: unknown): void; reject(error: Error): void; timer: NodeJS.Timeout | null };
-
-const READY_TIMEOUT = 45_000;
 const text = (value: unknown) => typeof value === "string" ? value : "";
 const arr = (value: unknown) => Array.isArray(value) ? value : [];
 const rec = (value: unknown): Rpc => isRecord(value) ? value : {};
-
-/** One-line JSON-RPC transport used by the official `dsh --profile sdk` entry. */
-export class DeepSeekSdkProcess {
-  private child: ChildProcessWithoutNullStreams | null = null;
-  private decoder = new StringDecoder("utf8");
-  private buffer = "";
-  private nextId = 1;
-  private pending = new Map<string, Pending>();
-  private closed = false;
-  private processGroupIsolated = false;
-  private exitResolve!: (code: number | null) => void;
-  readonly exited = new Promise<number | null>((resolve) => { this.exitResolve = resolve; });
-
+export class DeepSeekSdkProcess extends StdioJsonRpc {
   constructor(
-    private readonly onNotification: (method: string, params: Rpc) => void,
-    private readonly onRequest?: (id: RpcId, method: string, params: Rpc) => void
-  ) {}
-
-  start(binary: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv; detached: boolean }) {
-    this.processGroupIsolated = options.detached;
-    const child = spawnNativeCli(binary, args, { cwd: options.cwd, env: options.env, stdio: "pipe", detached: options.detached, windowsHide: true });
-    this.child = child;
-    child.stdin.on("error", () => undefined);
-    child.stdout.on("data", (chunk: Buffer) => this.consume(this.decoder.write(chunk)));
-    child.stderr.on("data", () => undefined);
-    child.on("error", (error) => this.fail(error));
-    child.on("close", (code) => { this.exitResolve(code); this.fail(new Error(`DeepSeek Harness exited (${code ?? "signal"}).`)); });
-  }
-
-  private consume(chunk: string) {
-    this.buffer += chunk;
-    let newline: number;
-    while ((newline = this.buffer.indexOf("\n")) >= 0) {
-      const line = this.buffer.slice(0, newline).trim(); this.buffer = this.buffer.slice(newline + 1);
-      if (!line) continue;
-      let message: Rpc;
-      try { message = rec(JSON.parse(line)); } catch { continue; }
-      if (typeof message.method === "string" && (typeof message.id === "string" || typeof message.id === "number")) {
-        if (this.onRequest) this.onRequest(message.id, message.method, rec(message.params));
-        else void this.respond(message.id, { error: { code: -32601, message: "Method not found." } }).catch(() => undefined);
-      } else if ("id" in message && ("result" in message || "error" in message)) {
-        const key = String(message.id); const pending = this.pending.get(key); if (!pending) continue;
-        this.pending.delete(key); if (pending.timer) clearTimeout(pending.timer);
-        if (message.error) pending.reject(new Error(text(rec(message.error).message) || "DeepSeek Harness request failed."));
-        else pending.resolve(message.result);
-      } else if (typeof message.method === "string") this.onNotification(message.method, rec(message.params));
-    }
-  }
-
-  respond(id: RpcId, response: { result: Rpc } | { error: { code: number; message: string } }) {
-    const child = this.child;
-    if (!child || this.closed || child.stdin.destroyed) {
-      return Promise.reject(new Error("DeepSeek Harness session is closed."));
-    }
-    return new Promise<void>((resolve, reject) => {
-      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, ...response })}\n`, (error) => {
-        if (error) reject(error);
-        else resolve();
-      });
-    });
-  }
-
-  request<T = Rpc>(method: string, params: Rpc = {}, timeoutMs = READY_TIMEOUT): Promise<T> {
-    if (!this.child || this.closed) return Promise.reject(new Error("DeepSeek Harness session is closed."));
-    const id = String(this.nextId++);
-    return new Promise<T>((resolve, reject) => {
-      const timer = timeoutMs > 0 ? setTimeout(() => { this.pending.delete(id); reject(new Error(`DeepSeek Harness timed out during ${method}.`)); }, timeoutMs) : null;
-      this.pending.set(id, { resolve, reject, timer });
-      this.child!.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`, (error) => {
-        if (!error) return;
-        if (timer) clearTimeout(timer); this.pending.delete(id); reject(error);
-      });
-    });
-  }
-
-  private fail(error: Error) {
-    for (const pending of this.pending.values()) { if (pending.timer) clearTimeout(pending.timer); pending.reject(error); }
-    this.pending.clear();
-  }
-
-  async close() {
-    if (this.closed) return;
-    this.closed = true; this.fail(new Error("DeepSeek Harness session closed."));
-    const child = this.child; this.child = null;
-    if (!child || child.exitCode !== null) return;
-    child.stdin.end();
-    await Promise.race([this.exited, new Promise<void>((resolve) => setTimeout(resolve, 1_500))]);
-    if (child.exitCode === null && child.pid) {
-      try {
-        if (this.processGroupIsolated && process.platform !== "win32") process.kill(-child.pid, "SIGKILL");
-        else forceStopNativeCli(child);
-      } catch { forceStopNativeCli(child); }
-      await Promise.race([this.exited, new Promise<void>((resolve) => setTimeout(resolve, 1_500))]);
-    }
+    onNotification: (method: string, params: Rpc) => void,
+    onRequest?: (id: RpcId, method: string, params: Rpc) => void
+  ) {
+    super("DeepSeek Harness", onNotification, onRequest);
   }
 }
 

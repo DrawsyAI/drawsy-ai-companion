@@ -882,6 +882,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       pi: { model: null, modelProvider: null, effort: null, accessMode: null, internetEnabled: null },
       omp: { model: null, modelProvider: null, effort: null, accessMode: null, internetEnabled: null },
       deepseek: { model: null, modelProvider: null, effort: null, accessMode: null, internetEnabled: null },
+      antigravity: { model: null, modelProvider: null, effort: null, accessMode: null, internetEnabled: null },
+      claude: { model: null, modelProvider: null, effort: null, accessMode: null, internetEnabled: null },
       updatedAt: 0,
     });
 
